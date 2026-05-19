@@ -98,7 +98,7 @@ class Register(Enum):
     COIL_SW_BOX_RIGHT_ON   = RegisterMeta(0x1008, RegisterKind.COIL)
 
     # ---------- Input registers (0x2000+) — read-only telemetry ----------
-    # Scaling and units sourced from SDR-1MOD-537-250-00_A6_USP_Modbus.doc.
+    # Scaling and units sourced from SDR-1MOD-537-250-00_A7_USP_Modbus.doc.
     # Convention: interpreted_value = raw * scale, expressed in `unit`.
     # Temperatures are stored in Kelvin (×10) on the wire; the client
     # converts to Celsius/Kelvin/Fahrenheit per SmartPowerClient.temperature_unit.
@@ -156,10 +156,10 @@ class Register(Enum):
     HOLD_REG_PA_MAX_WORK_SET        = RegisterMeta(0x3005, RegisterKind.HOLDING_REG)
     HOLD_REG_SP_I                   = RegisterMeta(0x3006, RegisterKind.HOLDING_REG, scale=0.01, unit="%")
     HOLD_REG_SP_P                   = RegisterMeta(0x3007, RegisterKind.HOLDING_REG, scale=0.01, unit="%")
-    # Tank-capacitor value/exponent pair: physical farads = VAL/100 * 10^EXP.
-    # The library returns the raw scaled value (VAL/100) and the exponent
-    # separately; combine them via SmartPowerClient.read_capacitance().
-    HOLD_REG_CAP_VAL                = RegisterMeta(0x3008, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    # Tank-capacitor value/exponent pair: physical farads = VAL * 10^EXP
+    # (spec rev A7, fixed from A6 which incorrectly stated VAL/100 * 10^EXP).
+    # Combine the two registers via SmartPowerClient.read_capacitance().
+    HOLD_REG_CAP_VAL                = RegisterMeta(0x3008, RegisterKind.HOLDING_REG)
     HOLD_REG_CAP_EXP                = RegisterMeta(0x3009, RegisterKind.HOLDING_REG, signed=True)
     HOLD_REG_CAP_MAX_V              = RegisterMeta(0x300A, RegisterKind.HOLDING_REG, scale=0.1, unit="V")
     HOLD_REG_HS_RATIO               = RegisterMeta(0x300B, RegisterKind.HOLDING_REG, scale=0.01, unit="")
@@ -169,7 +169,7 @@ class Register(Enum):
     HOLD_REG_SLAVE_PA_ENABLE_MASK   = RegisterMeta(0x300F, RegisterKind.HOLDING_REG)
     HOLD_REG_SECOND_HS_RATIO        = RegisterMeta(0x3010, RegisterKind.HOLDING_REG, scale=0.01, unit="")
     HOLD_REG_CAP_MAX_P              = RegisterMeta(0x3011, RegisterKind.HOLDING_REG, signed=True, scale=10000.0, unit="VA")
-    HOLD_REG_SECOND_CAP_VAL         = RegisterMeta(0x3012, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    HOLD_REG_SECOND_CAP_VAL         = RegisterMeta(0x3012, RegisterKind.HOLDING_REG)
     HOLD_REG_SECOND_CAP_EXP         = RegisterMeta(0x3013, RegisterKind.HOLDING_REG, signed=True)
     HOLD_REG_SECOND_CAP_MAX_V       = RegisterMeta(0x3014, RegisterKind.HOLDING_REG, scale=0.1, unit="V")
     HOLD_REG_SECOND_CAP_MAX_I       = RegisterMeta(0x3015, RegisterKind.HOLDING_REG, signed=True, scale=1.0, unit="A")

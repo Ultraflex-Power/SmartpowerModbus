@@ -294,9 +294,10 @@ def test_write_value_coil_passes_through(client, fake_client):
 
 
 def test_read_capacitance_combines_val_and_exp(client, fake_client):
-    """CAP_VAL=1234, CAP_EXP=-9 → 12.34 nF = 1.234e-8 F.
+    """CAP_VAL=1234, CAP_EXP=-9 → 1234 nF = 1.234e-6 F.
 
-    Formula: VAL/100 * 10^EXP.
+    Formula per spec rev A7: ``Cap = VAL * 10^EXP`` (no /100 divisor that
+    A6 wrongly listed).
     """
     # First read CAP_VAL (holding), then CAP_EXP. Both are holding registers
     # so they share the read_holding_registers script queue.
@@ -306,5 +307,5 @@ def test_read_capacitance_combines_val_and_exp(client, fake_client):
         _Resp(registers=[0xFFF7]), # CAP_EXP = -9 as int16
     )
     cap = client.read_capacitance()
-    # 1234 / 100 * 10^-9 = 12.34e-9 = 1.234e-8 F
-    assert cap == pytest.approx(1.234e-8, rel=1e-6)
+    # 1234 * 10^-9 = 1.234e-6 F
+    assert cap == pytest.approx(1.234e-6, rel=1e-6)

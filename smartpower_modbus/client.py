@@ -377,11 +377,13 @@ class SmartPowerClient:
 
         The firmware stores capacitance as a value/exponent pair across
         ``HOLD_REG_CAP_VAL`` (``0x3008``) and ``HOLD_REG_CAP_EXP``
-        (``0x3009``); the physical value is ``VAL/100 * 10^EXP`` F.
+        (``0x3009``); the physical value is ``VAL * 10^EXP`` F (spec
+        rev A7 — earlier revisions of the spec wrongly listed
+        ``VAL/100 * 10^EXP``).
         """
         val_raw = self.read(Register.HOLD_REG_CAP_VAL)
         exp_raw = self.read(Register.HOLD_REG_CAP_EXP)
-        return (val_raw / 100.0) * (10.0 ** exp_raw)
+        return val_raw * (10.0 ** exp_raw)
 
     def dump(self) -> dict[Register, int | bool]:
         """Read every register exposed by the configured model."""
