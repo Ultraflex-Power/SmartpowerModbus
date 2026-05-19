@@ -39,6 +39,10 @@ class ModbusCrcError(ModbusCommError):
     """Response received but its CRC or framing was invalid."""
 
 
+class IllegalFunctionError(ModbusCommError):
+    """Modbus exception response 0x01 — slave does not support this function code."""
+
+
 class IllegalAddressError(ModbusCommError):
     """Modbus exception response 0x02 — slave reports the address is illegal."""
 

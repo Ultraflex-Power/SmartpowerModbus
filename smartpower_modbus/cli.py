@@ -61,6 +61,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("dump", help="Read every register valid on the selected model")
     sub.add_parser("probe", help="Identify the model by probing diverging addresses")
+    sub.add_parser(
+        "identify",
+        help="Auto-identify the model via FC 0x2B PRODUCT_CODE (no --model needed)",
+    )
     sub.add_parser("list-registers", help="List all registers valid on the selected model")
     sub.add_parser("list-models", help="List all known SmartPower models")
 
@@ -120,7 +124,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.cmd == "list-models":
         for m in SmartPowerModel:
-            print(f"{m.value:22s}  (firmware branch: {m.firmware_branch.value})")
+            print(
+                f"{m.value:22s}  PRODUCT_CODE={m.product_code:8s}  "
+                f"(firmware branch: {m.firmware_branch.value})"
+            )
         return 0
 
     try:
@@ -128,11 +135,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SmartPowerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    if model is None:
-        print("error: --model is required for this command", file=sys.stderr)
-        return 2
 
     if args.cmd == "list-registers":
+        if model is None:
+            print("error: --model is required for list-registers", file=sys.stderr)
+            return 2
         for reg in sorted(Register.for_model(model), key=lambda r: (r.kind.value, r.addr)):
             print(f"0x{reg.addr:04X}  {reg.kind.value:14s}  {reg.name}")
         return 0
@@ -141,16 +148,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: --port and --slave are required for this command", file=sys.stderr)
         return 2
 
+    # `identify` is the one wire-touching subcommand that does not need a
+    # --model up front — it auto-detects via FC 0x2B. Every other
+    # subcommand needs a model.
+    if model is None and args.cmd != "identify":
+        print(
+            "error: --model is required (or use the `identify` subcommand to "
+            "auto-detect via FC 0x2B PRODUCT_CODE)",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         with SmartPowerClient(
             port=args.port,
             slave_id=args.slave,
-            model=model,
+            model=model,  # may be None for `identify`; client will auto-detect
             baudrate=args.baud,
             timeout=args.timeout,
             retries=args.retries,
         ) as client:
-            if args.cmd == "read":
+            if args.cmd == "identify":
+                info = client.read_device_info()
+                print(f"Vendor:       {info['vendor']}")
+                print(f"Product code: {info['product_code']}")
+                print(f"Revision:     {info['revision']}")
+                # ``with`` block already ran connect(), which auto-identifies
+                # when model is None.
+                print(f"Detected:     {client.model.value}")
+            elif args.cmd == "read":
                 for name in args.names:
                     reg = Register.from_name(name)
                     value = client.read(reg)

@@ -10,7 +10,13 @@ import pytest
 
 from smartpower_modbus import SmartPowerModel, UnsupportedFirmwareBranchError
 from smartpower_modbus.branches import FirmwareBranch
-from smartpower_modbus.models import _BRANCH_TO_MODEL, _MODEL_TO_BRANCH
+from smartpower_modbus.models import (
+    _BRANCH_TO_MODEL,
+    _MODEL_TO_BRANCH,
+    _MODEL_TO_PRODUCT_CODE,
+    _PRODUCT_CODE_TO_MODEL,
+    _normalize_product_code,
+)
 
 
 def test_public_model_values_are_stable_strings():
@@ -109,3 +115,54 @@ def test_register_models_property_is_consistent_with_branches():
     for reg in Register:
         derived = frozenset(_BRANCH_TO_MODEL[b] for b in reg.branches)
         assert reg.models == derived
+
+
+# ---------- Product-code mapping ----------
+
+def test_product_codes_match_firmware_app_cnfg_h():
+    """These are sourced from PRODUCT_CODE in App/app_cnfg.h on each
+    firmware branch. Pinned here so a silent change to either side is
+    caught immediately."""
+    assert SmartPowerModel.SOLO.product_code    == "55400400"
+    assert SmartPowerModel.GEN_1_0.product_code == "55370250"
+    assert SmartPowerModel.GEN_1_5.product_code == "55370111"
+    assert SmartPowerModel.GEN_2_0.product_code == "55370112"
+
+
+def test_product_code_to_model_inverse_is_bijective():
+    """Every model has exactly one product code and vice versa."""
+    assert len(_MODEL_TO_PRODUCT_CODE) == len(SmartPowerModel)
+    assert len(_PRODUCT_CODE_TO_MODEL) == len(_MODEL_TO_PRODUCT_CODE)
+    for m in SmartPowerModel:
+        assert _PRODUCT_CODE_TO_MODEL[_MODEL_TO_PRODUCT_CODE[m]] is m
+
+
+def test_normalize_product_code_strips_0x_and_whitespace_and_casing():
+    assert _normalize_product_code("55370112") == "55370112"
+    assert _normalize_product_code("0x55370250") == "55370250"
+    assert _normalize_product_code("0X55370250") == "55370250"
+    assert _normalize_product_code("  55370111\n") == "55370111"
+    # ASCII hex is case-insensitive — uppercase any letters.
+    assert _normalize_product_code("0xabcd") == "ABCD"
+
+
+def test_from_product_code_accepts_raw_firmware_strings():
+    """The library must accept the exact strings the firmware emits,
+    including the literal ``0x`` prefix used by the ProductionPhase1
+    branch."""
+    assert SmartPowerModel.from_product_code("55400400")    is SmartPowerModel.SOLO
+    assert SmartPowerModel.from_product_code("0x55370250")  is SmartPowerModel.GEN_1_0
+    assert SmartPowerModel.from_product_code("55370250")    is SmartPowerModel.GEN_1_0
+    assert SmartPowerModel.from_product_code("55370111")    is SmartPowerModel.GEN_1_5
+    assert SmartPowerModel.from_product_code("55370112")    is SmartPowerModel.GEN_2_0
+    # Whitespace and casing tolerated.
+    assert SmartPowerModel.from_product_code(" 55370112 ")  is SmartPowerModel.GEN_2_0
+
+
+def test_from_product_code_rejects_unknown():
+    with pytest.raises(UnsupportedFirmwareBranchError):
+        SmartPowerModel.from_product_code("DEADBEEF")
+    # The error message must include the unknown code so the user can
+    # report it back.
+    with pytest.raises(UnsupportedFirmwareBranchError, match="42424242"):
+        SmartPowerModel.from_product_code("42424242")

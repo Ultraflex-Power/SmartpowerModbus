@@ -28,6 +28,7 @@ import logging
 from .client import DEFAULT_BAUDRATE, SmartPowerClient
 from .exceptions import (
     IllegalAddressError,
+    IllegalFunctionError,
     IllegalValueError,
     InvalidValueError,
     ModbusCommError,
@@ -51,6 +52,7 @@ from .branches import FirmwareBranch  # noqa: F401  (kept exportable but not in 
 __all__ = [
     "DEFAULT_BAUDRATE",
     "IllegalAddressError",
+    "IllegalFunctionError",
     "IllegalValueError",
     "InvalidValueError",
     "ModbusCommError",

@@ -30,8 +30,11 @@ def main() -> int:
     parser.add_argument("--port", required=True, help="Serial port (COM5 / /dev/ttyUSB0)")
     parser.add_argument("--slave", type=int, default=1, help="Modbus slave ID")
     parser.add_argument(
-        "--model", default="SmartPowerGen_2.0",
-        help="Public SmartPower model name (default: SmartPowerGen_2.0)",
+        "--model", default=None,
+        help=(
+            "Public SmartPower model name. If omitted, the client auto-detects "
+            "the model on connect via Modbus FC 0x2B (PRODUCT_CODE)."
+        ),
     )
     parser.add_argument("--baud", type=int, default=38400)
     parser.add_argument("--sp-p", type=int, default=None,
@@ -40,9 +43,12 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    model = SmartPowerModel.from_name(args.model)
+    # Pass None to let the client auto-identify the model on connect.
+    model = SmartPowerModel.from_name(args.model) if args.model else None
 
     # 1) Open the connection. Context manager handles connect()/close().
+    #    When model is None, connect() auto-identifies via FC 0x2B
+    #    (PRODUCT_CODE) and sets client.model.
     try:
         with SmartPowerClient(
             port=args.port,
@@ -53,11 +59,14 @@ def main() -> int:
             retries=2,
         ) as client:
 
-            # 2) Model is already configured on the client. Quick probe to
-            #    sanity-check the device matches what we declared.
-            print(f"Probing model (configured = {model.value}) ...")
-            candidates = client.probe_model()
-            print(f"  device looks like one of: {[m.value for m in candidates]}")
+            # 2) Print what the device reports about itself.
+            info = client.read_device_info()
+            print(
+                f"Device: vendor={info['vendor']!r} "
+                f"product_code={info['product_code']!r} "
+                f"revision={info['revision']!r}"
+            )
+            print(f"Resolved model: {client.model.value}")
 
             # 3) Read several variables. Coils/discretes return bool;
             #    input/holding registers return int (signed if declared so).

@@ -25,6 +25,7 @@ import pytest
 
 from smartpower_modbus import (
     IllegalAddressError,
+    IllegalFunctionError,
     IllegalValueError,
     InvalidValueError,
     ModbusCommError,
@@ -32,7 +33,9 @@ from smartpower_modbus import (
     ReadOnlyRegisterError,
     Register,
     SmartPowerClient,
+    SmartPowerError,
     SmartPowerModel,
+    UnsupportedFirmwareBranchError,
     UnsupportedRegisterError,
 )
 from smartpower_modbus.branches import FirmwareBranch
@@ -72,6 +75,16 @@ class _ExcResp:
 
     def isError(self):  # noqa: N802
         return True
+
+
+class _DeviceInfoResp:
+    """Stand-in for ``pymodbus.pdu.mei_message.ReadDeviceInformationResponse``."""
+
+    def __init__(self, information):
+        self.information = information
+
+    def isError(self):  # noqa: N802
+        return False
 
 
 # ---------- Fake pymodbus client wired into the transport ----------
@@ -127,6 +140,21 @@ class FakeSerialClient:
     def read_discrete_inputs(self, address, *, slave=None, count=1, **kw):
         self.calls.append(_Call("read_discrete_inputs", address, {"slave": slave, "count": count, **kw}))
         return self._next("read_discrete_inputs", _Resp(bits=[False] * count))
+
+    # FC 0x2B/0x0E — Read Device Identification
+    def read_device_information(self, *, read_code=0x01, object_id=0, slave=None, **kw):
+        self.calls.append(_Call(
+            "read_device_information", -1,
+            {"read_code": read_code, "object_id": object_id, "slave": slave, **kw},
+        ))
+        return self._next(
+            "read_device_information",
+            _DeviceInfoResp({
+                0: b"Ultraflex Power",
+                1: b"55370112",
+                2: b"1.0.0",
+            }),
+        )
 
     # writes
     def write_register(self, address, *, slave=None, value=0, **kw):
@@ -410,8 +438,137 @@ def test_client_rejects_both_model_and_branch():
 
 
 def test_client_requires_model_arg():
-    with pytest.raises(TypeError):
-        SmartPowerClient(port="dummy", slave_id=1)
+    """It is allowed to omit ``model=`` — that triggers auto-detection on
+    connect. But not when combined with the deprecated ``branch=``."""
+    # Constructor without model= is valid (auto-detect later).
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01)
+    assert c.model is None
+
+
+# ---------- Tests: auto-recognition via FC 0x2B PRODUCT_CODE ----------
+
+def test_read_device_info_returns_three_named_fields(client, fake_client):
+    fake_client.script("read_device_information", _DeviceInfoResp({
+        0: b"Ultraflex Power",
+        1: b"55370112",
+        2: b"1.2.3",
+    }))
+    info = client.read_device_info()
+    assert info == {
+        "vendor": "Ultraflex Power",
+        "product_code": "55370112",
+        "revision": "1.2.3",
+    }
+    call = fake_client.calls[-1]
+    assert call.name == "read_device_information"
+    # read_code=0x01 (basic) returns the three mandatory objects.
+    assert call.kwargs["read_code"] == 0x01
+    assert call.kwargs["object_id"] == 0
+    assert call.kwargs["slave"] == 1
+
+
+def test_read_product_code_uses_specific_object_request(client, fake_client):
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55370112"}))
+    code = client.read_product_code()
+    assert code == "55370112"
+    call = fake_client.calls[-1]
+    # read_code=0x04 (specific object) with object_id=1 (product code).
+    assert call.kwargs["read_code"] == 0x04
+    assert call.kwargs["object_id"] == 1
+
+
+def test_read_product_code_strips_null_bytes_and_whitespace(client, fake_client):
+    fake_client.script(
+        "read_device_information",
+        _DeviceInfoResp({1: b"55370112\x00\x00"}),
+    )
+    assert client.read_product_code() == "55370112"
+
+
+def test_identify_model_resolves_known_product_code(client, fake_client):
+    """Returning '55370250' (the GEN_1_0 product code, stored without the
+    '0x' prefix the firmware emits) resolves to SmartPowerModel.GEN_1_0."""
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55370250"}))
+    # Client is currently configured for GEN_2_0; identify should disagree
+    # with the configured model but still RETURN the device-reported one.
+    result = client.identify_model()
+    assert result is SmartPowerModel.GEN_1_0
+    # The disagreement must NOT silently overwrite an explicitly-set model.
+    assert client.model is SmartPowerModel.GEN_2_0
+
+
+def test_identify_model_accepts_firmware_literal_0x_prefix(client, fake_client):
+    """ProductionPhase1 firmware reports its product code with a literal
+    "0x" prefix in the C-string."""
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"0x55370250"}))
+    assert client.identify_model() is SmartPowerModel.GEN_1_0
+
+
+def test_identify_model_raises_on_unknown_product_code(client, fake_client):
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"DEADBEEF"}))
+    with pytest.raises(UnsupportedFirmwareBranchError, match="DEADBEEF"):
+        client.identify_model()
+
+
+def test_identify_model_raises_on_unsupported_function_code(client, fake_client):
+    """Device returns exception 0x01 (illegal function) when it doesn't
+    implement FC 0x2B at all."""
+    fake_client.script("read_device_information", _ExcResp(0x01))
+    with pytest.raises(IllegalFunctionError):
+        client.identify_model()
+
+
+def test_auto_identify_at_connect_when_model_is_none(fake_client):
+    """Constructing with model=None should cause connect() to auto-detect
+    via FC 0x2B and set self.model."""
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55370111"}))
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01, retries=0)
+    c._transport._client = fake_client
+    assert c.model is None
+    c.connect()
+    try:
+        assert c.model is SmartPowerModel.GEN_1_5
+    finally:
+        c.close()
+
+
+def test_no_model_set_blocks_high_level_read(fake_client):
+    """If model is None and connect hasn't run yet, calling read() must
+    raise rather than guess."""
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01)
+    c._transport._client = fake_client
+    # Don't call connect(); model is still None.
+    with pytest.raises(SmartPowerError, match="model is not set"):
+        c.read(Register.INPUT_REG_OUT_P)
+
+
+def test_identify_model_sets_model_when_none(fake_client):
+    """Calling identify_model() on a client without a configured model
+    must set self.model to the resolved value."""
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55400400"}))
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01, retries=0)
+    c._transport._client = fake_client
+    c._transport.connect()
+    c._connected = True
+    try:
+        result = c.identify_model()
+        assert result is SmartPowerModel.SOLO
+        assert c.model is SmartPowerModel.SOLO
+    finally:
+        c.close()
+
+
+def test_identify_model_warns_on_mismatch_but_keeps_explicit_model(client, fake_client, caplog):
+    """If the user explicitly configured a model and the device reports
+    a different one, the explicit value wins but a warning is logged."""
+    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55370111"}))
+    # Client fixture was constructed with GEN_2_0; device reports GEN_1_5.
+    import logging
+    with caplog.at_level(logging.WARNING, logger="smartpower_modbus.client"):
+        result = client.identify_model()
+    assert result is SmartPowerModel.GEN_1_5
+    assert client.model is SmartPowerModel.GEN_2_0  # unchanged
+    assert any("disagrees" in r.message for r in caplog.records)
 
 
 # ---------- Tests: context manager ----------

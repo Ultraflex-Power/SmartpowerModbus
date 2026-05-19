@@ -1,22 +1,23 @@
 """Public-facing SmartPower model identifiers and the centralized
-public-model ↔ firmware-branch mapping.
+public-model ↔ firmware-branch / product-code mapping.
 
 This is the only place that translates between what the customer-facing
-world calls things ("SmartPowerGen_2.0") and what the firmware repo
-internally calls things ("MegaMain"). Adding a new SmartPower model means
-adding one enum member and one entry to ``_MODEL_TO_BRANCH`` — nothing
-else in the public API changes.
+world calls things ("SmartPowerGen_2.0"), what the firmware repo
+internally calls things ("MegaMain"), and what the device itself reports
+over Modbus FC 0x2B/0x0E (PRODUCT_CODE, e.g. "55370112"). Adding a new
+SmartPower model means adding one enum member plus one entry to each of
+the three mapping tables — nothing else in the public API changes.
 
 Mapping::
 
-    SmartPowerModel.SOLO    ↔ "SmartPowerSolo"     ↔ SngleModule_5540_LF_MF_ExtPA_simple
-    SmartPowerModel.GEN_1_0 ↔ "SmartPowerGen_1.0"  ↔ ProductionPhase1_Fast_1_15_base
-    SmartPowerModel.GEN_1_5 ↔ "SmartPowerGen_1.5"  ↔ Gen_1_5_MOD-5537-110_24_outputs_pwm_limit
-    SmartPowerModel.GEN_2_0 ↔ "SmartPowerGen_2.0"  ↔ MegaMain
+    SmartPowerModel.SOLO    ↔ "SmartPowerSolo"     ↔ SngleModule_5540_LF_MF_ExtPA_simple        ↔ "55400400"
+    SmartPowerModel.GEN_1_0 ↔ "SmartPowerGen_1.0"  ↔ ProductionPhase1_Fast_1_15_base            ↔ "55370250"
+    SmartPowerModel.GEN_1_5 ↔ "SmartPowerGen_1.5"  ↔ Gen_1_5_MOD-5537-110_24_outputs_pwm_limit  ↔ "55370111"
+    SmartPowerModel.GEN_2_0 ↔ "SmartPowerGen_2.0"  ↔ MegaMain                                   ↔ "55370112"
 
-The firmware branch strings are internal implementation details — they may
-move or be renamed in the firmware repo. The public model names are the
-stable contract.
+The firmware branch strings and the raw PRODUCT_CODE strings are internal
+implementation details — they may move or be renamed in the firmware
+repo. The public model names are the stable contract.
 """
 
 from __future__ import annotations
@@ -49,6 +50,34 @@ class SmartPowerModel(Enum):
     def firmware_branch(self) -> FirmwareBranch:
         """The internal firmware-repo branch that ships on this model."""
         return _MODEL_TO_BRANCH[self]
+
+    @property
+    def product_code(self) -> str:
+        """Normalized device-reported PRODUCT_CODE string for this model.
+
+        This is the value the firmware returns over Modbus FC 0x2B/0x0E
+        (Read Device Identification, object ID 1), with any leading
+        ``"0x"`` prefix stripped and case normalised.
+        """
+        return _MODEL_TO_PRODUCT_CODE[self]
+
+    @classmethod
+    def from_product_code(cls, code: str) -> "SmartPowerModel":
+        """Resolve a model from the raw PRODUCT_CODE string the device
+        reports over Modbus FC 0x2B/0x0E.
+
+        Accepts the firmware-side spelling exactly (e.g. ``"55370112"``
+        or the literal ``"0x55370250"`` that ProductionPhase1 firmware
+        emits); leading ``"0x"`` is stripped, surrounding whitespace is
+        trimmed, and the comparison is case-insensitive.
+        """
+        try:
+            return _PRODUCT_CODE_TO_MODEL[_normalize_product_code(code)]
+        except KeyError:
+            raise UnsupportedFirmwareBranchError(
+                f"Unknown SmartPower product code: {code!r}. "
+                f"Known codes: " + ", ".join(_PRODUCT_CODE_TO_MODEL.keys())
+            ) from None
 
     @classmethod
     def from_name(cls, name: str) -> "SmartPowerModel":
@@ -115,12 +144,41 @@ _BRANCH_TO_MODEL: dict[FirmwareBranch, SmartPowerModel] = {
     b: m for m, b in _MODEL_TO_BRANCH.items()
 }
 
-# Integrity check — the two dicts must be mutual inverses and cover every
-# branch / model. Fails loudly at import time if a new branch or model is
-# added without updating the mapping.
+# Device-reported PRODUCT_CODE strings — sourced from PRODUCT_CODE in
+# App/app_cnfg.h on each firmware branch. Stored normalised (no "0x"
+# prefix, uppercase) so any inbound variant can be matched after a
+# single normalisation step.
+_MODEL_TO_PRODUCT_CODE: dict[SmartPowerModel, str] = {
+    SmartPowerModel.SOLO:    "55400400",
+    SmartPowerModel.GEN_1_0: "55370250",
+    SmartPowerModel.GEN_1_5: "55370111",
+    SmartPowerModel.GEN_2_0: "55370112",
+}
+
+_PRODUCT_CODE_TO_MODEL: dict[str, SmartPowerModel] = {
+    code: m for m, code in _MODEL_TO_PRODUCT_CODE.items()
+}
+
+
+def _normalize_product_code(code: str) -> str:
+    """Strip whitespace and any ``0x`` prefix and uppercase the result."""
+    s = code.strip()
+    if s[:2].lower() == "0x":
+        s = s[2:]
+    return s.upper()
+
+
+# Integrity checks — fail loudly at import time if a new model is added
+# without updating any of the three mapping tables.
 assert set(_MODEL_TO_BRANCH.keys()) == set(SmartPowerModel), (
     "SmartPowerModel ↔ FirmwareBranch mapping is missing a model"
 )
 assert set(_MODEL_TO_BRANCH.values()) == set(FirmwareBranch), (
     "SmartPowerModel ↔ FirmwareBranch mapping is missing a firmware branch"
+)
+assert set(_MODEL_TO_PRODUCT_CODE.keys()) == set(SmartPowerModel), (
+    "SmartPowerModel ↔ product_code mapping is missing a model"
+)
+assert len(_PRODUCT_CODE_TO_MODEL) == len(_MODEL_TO_PRODUCT_CODE), (
+    "Two SmartPowerModel members share a product code — codes must be unique"
 )

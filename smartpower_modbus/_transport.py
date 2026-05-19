@@ -18,6 +18,7 @@ from typing import Any
 
 from .exceptions import (
     IllegalAddressError,
+    IllegalFunctionError,
     IllegalValueError,
     ModbusCommError,
     ModbusCrcError,
@@ -149,6 +150,61 @@ class _Transport:
             result_attr=None, retryable=True,
         )
 
+    # ----- Modbus FC 0x2B/0x0E: Read Device Identification -----
+
+    def read_device_information(
+        self,
+        read_code: int = 0x04,
+        object_id: int = 0,
+    ) -> dict[int, str]:
+        """Issue a Modbus FC 0x2B/0x0E Read Device Identification request.
+
+        ``read_code``: 0x01 basic, 0x02 regular, 0x03 extended, 0x04
+        specific object (default — returns just ``object_id``).
+
+        Returns a ``dict[int, str]`` keyed by MEI object ID. The
+        SmartPower firmware exposes:
+
+        - 0: vendor name (``"Ultraflex Power"``)
+        - 1: product code (``"55370112"`` etc.)
+        - 2: revision (firmware version string)
+        """
+        from pymodbus.exceptions import ConnectionException, ModbusIOException
+        try:
+            response = self._client.read_device_information(
+                read_code=read_code,
+                object_id=object_id,
+                slave=self._slave_id,
+            )
+        except ConnectionException as exc:
+            raise SerialPortError(f"Serial connection lost: {exc}") from exc
+        except ModbusIOException as exc:
+            raise self._translate_io_error(exc) from exc
+
+        if response is None:
+            raise ModbusCommError("No response to Read Device Identification")
+        exc_code = getattr(response, "exception_code", None)
+        if exc_code is not None:
+            self._raise_exception_response(response)
+        if response.isError():
+            raise self._translate_io_error(response)
+
+        raw_info = getattr(response, "information", None)
+        if raw_info is None:
+            raise ModbusCommError(
+                "Read Device Identification response missing 'information' field"
+            )
+        out: dict[int, str] = {}
+        for oid, value in raw_info.items():
+            if isinstance(value, (bytes, bytearray)):
+                try:
+                    out[int(oid)] = value.decode("ascii", errors="replace").rstrip("\x00").strip()
+                except Exception:
+                    out[int(oid)] = value.hex()
+            else:
+                out[int(oid)] = str(value)
+        return out
+
     # ----- internals -----
 
     def _call(
@@ -231,6 +287,8 @@ class _Transport:
         # pymodbus exposes the Modbus exception code as ``exception_code``.
         code = getattr(response, "exception_code", None)
         msg = f"Modbus exception response 0x{code:02X}" if code is not None else "Modbus exception response"
+        if code == 0x01:
+            raise IllegalFunctionError(msg)
         if code == 0x02:
             raise IllegalAddressError(msg)
         if code == 0x03:

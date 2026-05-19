@@ -86,8 +86,6 @@ class SmartPowerClient:
         branch=None,
     ) -> None:
         # Backward-compat: accept the deprecated ``branch=`` kwarg.
-        if model is None and branch is None:
-            raise TypeError("SmartPowerClient requires a `model=` argument")
         if model is not None and branch is not None:
             raise TypeError("Pass either `model=` or `branch=`, not both")
         if branch is not None:
@@ -97,7 +95,12 @@ class SmartPowerClient:
                 DeprecationWarning, stacklevel=2,
             )
             model = branch
-        self.model: SmartPowerModel = _coerce_model(model)
+        # ``model=None`` means auto-identify the device on connect() via
+        # Modbus FC 0x2B/0x0E (PRODUCT_CODE). The attribute is typed
+        # ``SmartPowerModel | None`` until connect() resolves it.
+        self.model: SmartPowerModel | None = (
+            _coerce_model(model) if model is not None else None
+        )
 
         if not 1 <= slave_id <= 247:
             raise InvalidValueError(
@@ -130,7 +133,17 @@ class SmartPowerClient:
             "SmartPowerClient.branch is deprecated; use SmartPowerClient.model.",
             DeprecationWarning, stacklevel=2,
         )
-        return self.model.firmware_branch
+        return self._require_model().firmware_branch
+
+    def _require_model(self) -> SmartPowerModel:
+        """Return the resolved model or raise if it hasn't been set yet."""
+        if self.model is None:
+            raise SmartPowerError(
+                "SmartPowerClient model is not set. Either pass model= to "
+                "the constructor or call connect()/identify_model() so the "
+                "device can be auto-identified via FC 0x2B (PRODUCT_CODE)."
+            )
+        return self.model
 
     # ----- lifecycle -----
 
@@ -139,10 +152,17 @@ class SmartPowerClient:
             if not self._connected:
                 self._transport.connect()
                 self._connected = True
-                logger.info(
-                    "Connected to %s slave=%d model=%s",
-                    self.port, self.slave_id, self.model.value,
-                )
+        # Auto-identify the model if the user didn't pass one. Done outside
+        # the lock because identify_model() acquires it itself.
+        if self.model is None:
+            logger.info(
+                "No model configured — auto-identifying via FC 0x2B PRODUCT_CODE"
+            )
+            self.identify_model()
+        logger.info(
+            "Connected to %s slave=%d model=%s",
+            self.port, self.slave_id, self.model.value,
+        )
         return self
 
     def close(self) -> None:
@@ -196,7 +216,7 @@ class SmartPowerClient:
 
     def read(self, reg: Register) -> int | bool:
         """Read a single register with model + type validation."""
-        assert_supported(reg, self.model)
+        assert_supported(reg, self._require_model())
         with self._lock:
             if reg.kind is RegisterKind.COIL:
                 return self._transport.read_coils(reg.addr, 1)[0]
@@ -210,7 +230,7 @@ class SmartPowerClient:
 
     def write(self, reg: Register, value: int | bool) -> None:
         """Write a single register with model + type validation."""
-        assert_supported(reg, self.model)
+        assert_supported(reg, self._require_model())
         if not reg.is_writable:
             raise ReadOnlyRegisterError(
                 f"{reg.name} is a {reg.kind.value}; not writable."
@@ -244,8 +264,9 @@ class SmartPowerClient:
 
     def dump(self) -> dict[Register, int | bool]:
         """Read every register exposed by the configured model."""
+        model = self._require_model()
         out: dict[Register, int | bool] = {}
-        for reg in sorted(Register.for_model(self.model), key=lambda r: (r.kind.value, r.addr)):
+        for reg in sorted(Register.for_model(model), key=lambda r: (r.kind.value, r.addr)):
             try:
                 out[reg] = self.read(reg)
             except IllegalAddressError:
@@ -287,7 +308,7 @@ class SmartPowerClient:
             candidates = (SmartPowerModel.SOLO, SmartPowerModel.GEN_1_0)
         else:
             candidates = (SmartPowerModel.GEN_1_5, SmartPowerModel.GEN_2_0)
-        if self.model not in candidates:
+        if self.model is not None and self.model not in candidates:
             logger.warning(
                 "Configured model %s does not match probe result %s",
                 self.model.value, [m.value for m in candidates],
@@ -305,3 +326,81 @@ class SmartPowerClient:
             DeprecationWarning, stacklevel=2,
         )
         return tuple(m.firmware_branch for m in self.probe_model())
+
+    # ----- auto-recognition via FC 0x2B PRODUCT_CODE -----
+
+    def read_device_info(self) -> dict[str, str]:
+        """Read the standard Modbus device identification objects.
+
+        Issues FC 0x2B / 0x0E (Read Device Identification) at ``read_code=0x01``
+        (basic conformity level) which returns the three mandatory MEI
+        objects:
+
+        - ``"vendor"``   (object ID 0) — e.g. ``"Ultraflex Power"``
+        - ``"product_code"`` (object ID 1) — e.g. ``"55370112"``
+        - ``"revision"`` (object ID 2) — firmware revision string
+
+        Returns a ``dict[str, str]`` keyed by friendly name.
+        """
+        with self._lock:
+            raw = self._transport.read_device_information(read_code=0x01, object_id=0)
+        return {
+            "vendor":       raw.get(0, ""),
+            "product_code": raw.get(1, ""),
+            "revision":     raw.get(2, ""),
+        }
+
+    def read_product_code(self) -> str:
+        """Read just the PRODUCT_CODE string the device reports.
+
+        Issues FC 0x2B / 0x0E with ``read_code=0x04`` (specific object) and
+        ``object_id=1`` — a single-object request, the cheapest way to
+        identify a device.
+        """
+        with self._lock:
+            raw = self._transport.read_device_information(read_code=0x04, object_id=1)
+        code = raw.get(1)
+        if code is None or code == "":
+            raise SmartPowerError(
+                "Device did not return a product code in response to FC 0x2B"
+            )
+        return code
+
+    def identify_model(self) -> SmartPowerModel:
+        """Auto-identify the SmartPower model by reading its PRODUCT_CODE.
+
+        Issues FC 0x2B / 0x0E, looks the result up in the centralized
+        product-code-to-model table, and **sets** ``self.model`` to the
+        resolved value (so subsequent calls to ``read()`` / ``write()``
+        work without further configuration).
+
+        Raises:
+            IllegalFunctionError: if the device does not support FC 0x2B.
+            UnsupportedFirmwareBranchError: if the product code is not
+                recognised. The raw code is included in the error message
+                so it can be added to the mapping if it's a new model.
+            ModbusCommError: on transport-level failures.
+        """
+        code = self.read_product_code()
+        try:
+            model = SmartPowerModel.from_product_code(code)
+        except UnsupportedFirmwareBranchError as exc:
+            logger.error(
+                "Unrecognised PRODUCT_CODE from %s slave=%d: %r",
+                self.port, self.slave_id, code,
+            )
+            raise UnsupportedFirmwareBranchError(
+                f"Device reported PRODUCT_CODE {code!r}, which does not "
+                f"match any known SmartPower model. {exc}"
+            ) from exc
+
+        if self.model is not None and self.model is not model:
+            logger.warning(
+                "Configured model %s disagrees with device-reported model %s "
+                "(PRODUCT_CODE %r) — keeping configured value",
+                self.model.value, model.value, code,
+            )
+        else:
+            self.model = model
+            logger.info("Identified model: %s (PRODUCT_CODE %r)", model.value, code)
+        return model

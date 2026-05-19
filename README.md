@@ -17,12 +17,16 @@ Requires Python 3.10+ and `pymodbus>=3.7,<4`.
 
 The public API talks in **product model names** only:
 
-| `SmartPowerModel` member  | Public name (`.value`)  | Customer-facing platform |
-|---------------------------|-------------------------|--------------------------|
-| `SmartPowerModel.SOLO`    | `SmartPowerSolo`        | SmartPower Solo          |
-| `SmartPowerModel.GEN_1_0` | `SmartPowerGen_1.0`     | SmartPower Gen 1.0       |
-| `SmartPowerModel.GEN_1_5` | `SmartPowerGen_1.5`     | SmartPower Gen 1.5       |
-| `SmartPowerModel.GEN_2_0` | `SmartPowerGen_2.0`     | SmartPower Gen 2.0       |
+| `SmartPowerModel` member  | Public name (`.value`)  | `PRODUCT_CODE` | Customer-facing platform |
+|---------------------------|-------------------------|----------------|--------------------------|
+| `SmartPowerModel.SOLO`    | `SmartPowerSolo`        | `55400400`     | SmartPower Solo          |
+| `SmartPowerModel.GEN_1_0` | `SmartPowerGen_1.0`     | `55370250`     | SmartPower Gen 1.0       |
+| `SmartPowerModel.GEN_1_5` | `SmartPowerGen_1.5`     | `55370111`     | SmartPower Gen 1.5       |
+| `SmartPowerModel.GEN_2_0` | `SmartPowerGen_2.0`     | `55370112`     | SmartPower Gen 2.0       |
+
+The `PRODUCT_CODE` column shows the value the firmware returns over
+Modbus FC 0x2B/0x0E (Read Device Identification). The library uses this
+for auto-recognition — see [Auto-detection](#auto-detection).
 
 The mapping from these public model names to the firmware-repo branch that
 ships on each model is internal — see
@@ -78,6 +82,57 @@ Walkthrough script:
 python example.py --port COM5 --slave 1 --model SmartPowerGen_2.0 --sp-p 50
 ```
 
+## Auto-detection
+
+The library can identify the connected SmartPower model automatically
+using Modbus FC 0x2B/0x0E (Read Device Identification). Each firmware
+ships with a unique `PRODUCT_CODE` constant — the library queries it on
+connect and maps it to a `SmartPowerModel`.
+
+Three ways to use it:
+
+**Implicit (auto-detect at connect).** Pass `model=None` (or simply omit
+`model=`) and the client identifies the device during `connect()`:
+
+```python
+from smartpower_modbus import SmartPowerClient, Register
+
+with SmartPowerClient("COM5", slave_id=1) as client:
+    print(client.model.value)              # "SmartPowerGen_2.0"
+    print(client.read(Register.INPUT_REG_OUT_P))
+```
+
+**Explicit identification.**
+
+```python
+with SmartPowerClient("COM5", slave_id=1) as client:
+    model = client.identify_model()        # SmartPowerModel.GEN_2_0
+    info  = client.read_device_info()      # vendor / product_code / revision
+    code  = client.read_product_code()     # "55370112"
+```
+
+**From the CLI.**
+
+```powershell
+smartpower-cli --port COM5 --slave 1 identify
+# Vendor:       Ultraflex Power
+# Product code: 55370112
+# Revision:     1.0.0
+# Detected:     SmartPowerGen_2.0
+```
+
+If the device reports a `PRODUCT_CODE` that doesn't match any known
+model, the library raises `UnsupportedFirmwareBranchError` with the raw
+code in the message so it can be added to
+`smartpower_modbus/models.py:_MODEL_TO_PRODUCT_CODE`. If the device
+returns Modbus exception 0x01 (Illegal Function), the library raises
+`IllegalFunctionError` — the firmware on the slave does not implement
+FC 0x2B and you must pass `model=` explicitly.
+
+When **both** `model=` is given **and** auto-identification disagrees
+(via an explicit `identify_model()` call), the explicit value wins and
+a warning is logged.
+
 ## CLI
 
 `--model` accepts a public SmartPower model name.
@@ -87,9 +142,13 @@ smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 read OUT_P OUT_I 
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 write HOLD_REG_SP_P 50
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 dump
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 probe
+smartpower-cli --port COM5 --slave 1                            identify
 smartpower-cli --model SmartPowerGen_2.0 list-registers
 smartpower-cli list-models
 ```
+
+`identify` is the only wire-touching subcommand that does not need
+`--model` — it auto-detects via `PRODUCT_CODE`.
 
 If the `smartpower-cli` entry point isn't on PATH, use
 `python -m smartpower_modbus.cli ...`.
@@ -105,8 +164,9 @@ All raised exceptions inherit from `SmartPowerError`:
 - `SerialPortError` — could not open or hold the serial port
 - `ModbusCommError` — base for transport-level failures
   - `ModbusTimeoutError`, `ModbusCrcError` — retried automatically (configurable)
-  - `IllegalAddressError`, `IllegalValueError`, `SlaveDeviceFailureError` — Modbus
-    exception responses 0x02 / 0x03 / 0x04, **not** retried
+  - `IllegalFunctionError`, `IllegalAddressError`, `IllegalValueError`,
+    `SlaveDeviceFailureError` — Modbus exception responses
+    0x01 / 0x02 / 0x03 / 0x04, **not** retried
 
 ## Adding a new SmartPower model
 
@@ -116,7 +176,8 @@ All raised exceptions inherit from `SmartPowerError`:
 2. Add a new member to `FirmwareBranch` in
    `smartpower_modbus/branches.py` with the exact firmware-repo branch
    name as its `.value`.
-3. Add the new model → branch pair to `_MODEL_TO_BRANCH` in `models.py`.
+3. Add the new model → branch pair to `_MODEL_TO_BRANCH` **and** the
+   model → product-code pair to `_MODEL_TO_PRODUCT_CODE` in `models.py`.
    The integrity asserts at the bottom of `models.py` will fail at import
    time if you forget.
 4. In `smartpower_modbus/registers.py`, append the new firmware branch to
