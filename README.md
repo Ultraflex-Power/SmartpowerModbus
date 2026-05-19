@@ -133,3 +133,7 @@ mapping table do.
 pip install -e .[test]
 pytest
 ```
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Ultraflex Power.
