@@ -98,47 +98,51 @@ class Register(Enum):
     COIL_SW_BOX_RIGHT_ON   = RegisterMeta(0x1008, RegisterKind.COIL)
 
     # ---------- Input registers (0x2000+) — read-only telemetry ----------
+    # Scaling and units sourced from SDR-1MOD-537-250-00_A6_USP_Modbus.doc.
+    # Convention: interpreted_value = raw * scale, expressed in `unit`.
+    # Temperatures are stored in Kelvin (×10) on the wire; the client
+    # converts to Celsius/Kelvin/Fahrenheit per SmartPowerClient.temperature_unit.
     INPUT_REG_ERROR                  = RegisterMeta(0x2000, RegisterKind.INPUT_REG)
     INPUT_REG_RESET                  = RegisterMeta(0x2001, RegisterKind.INPUT_REG)
     INPUT_REG_AIN_ASSIGN             = RegisterMeta(0x2002, RegisterKind.INPUT_REG)
     INPUT_REG_AOUT_ASSIGN            = RegisterMeta(0x2003, RegisterKind.INPUT_REG)
     INPUT_REG_PA_ENABLE_MASK         = RegisterMeta(0x2004, RegisterKind.INPUT_REG)
     INPUT_REG_PA_MAX_WORK_SET        = RegisterMeta(0x2005, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_100_P              = RegisterMeta(0x2006, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_100_I              = RegisterMeta(0x2007, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_100_V              = RegisterMeta(0x2008, RegisterKind.INPUT_REG)
-    INPUT_REG_SP_I                   = RegisterMeta(0x2009, RegisterKind.INPUT_REG)
-    INPUT_REG_SP_P                   = RegisterMeta(0x200A, RegisterKind.INPUT_REG)
-    INPUT_REG_IN_COOLANT_T           = RegisterMeta(0x200B, RegisterKind.INPUT_REG, signed=True)
-    INPUT_REG_OUT_COOLANT_T          = RegisterMeta(0x200C, RegisterKind.INPUT_REG, signed=True)
-    INPUT_REG_CABINET_T              = RegisterMeta(0x200D, RegisterKind.INPUT_REG, signed=True)
+    INPUT_REG_OUT_100_P              = RegisterMeta(0x2006, RegisterKind.INPUT_REG, scale=100.0, unit="W")
+    INPUT_REG_OUT_100_I              = RegisterMeta(0x2007, RegisterKind.INPUT_REG, scale=0.1,   unit="A")
+    INPUT_REG_OUT_100_V              = RegisterMeta(0x2008, RegisterKind.INPUT_REG, scale=0.1,   unit="V")
+    INPUT_REG_SP_I                   = RegisterMeta(0x2009, RegisterKind.INPUT_REG, scale=0.01,  unit="%")
+    INPUT_REG_SP_P                   = RegisterMeta(0x200A, RegisterKind.INPUT_REG, scale=0.01,  unit="%")
+    INPUT_REG_IN_COOLANT_T           = RegisterMeta(0x200B, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
+    INPUT_REG_OUT_COOLANT_T          = RegisterMeta(0x200C, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
+    INPUT_REG_CABINET_T              = RegisterMeta(0x200D, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
     # Same address in every branch; MegaMain spells it MCB_COOLANT_FLOW.
     INPUT_REG_PA_COOLANT_FLOW        = RegisterMeta(
-        0x200E, RegisterKind.INPUT_REG,
+        0x200E, RegisterKind.INPUT_REG, scale=0.1, unit="lps",
         legacy_names=("INPUT_REG_MCB_COOLANT_FLOW", "MCB_COOLANT_FLOW"),
     )
-    INPUT_REG_IN_V                   = RegisterMeta(0x200F, RegisterKind.INPUT_REG)
-    INPUT_REG_LIMIT                  = RegisterMeta(0x2010, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_P                  = RegisterMeta(0x2011, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_I                  = RegisterMeta(0x2012, RegisterKind.INPUT_REG)
-    INPUT_REG_OUT_V                  = RegisterMeta(0x2013, RegisterKind.INPUT_REG)
-    INPUT_REG_TANK_CAP_V             = RegisterMeta(0x2014, RegisterKind.INPUT_REG)
-    INPUT_REG_FREQ                   = RegisterMeta(0x2015, RegisterKind.INPUT_REG)
-    INPUT_REG_DEW_POINT_T            = RegisterMeta(0x2016, RegisterKind.INPUT_REG, signed=True)
-    INPUT_REG_HUMIDITY               = RegisterMeta(0x2017, RegisterKind.INPUT_REG)
-    INPUT_REG_TIMER_REMAIN           = RegisterMeta(0x2018, RegisterKind.INPUT_REG)
-    INPUT_REG_SLAVE_PA_ENABLE_MASK   = RegisterMeta(0x2019, RegisterKind.INPUT_REG)
+    INPUT_REG_IN_V                   = RegisterMeta(0x200F, RegisterKind.INPUT_REG, scale=0.1, unit="V")
+    INPUT_REG_LIMIT                  = RegisterMeta(0x2010, RegisterKind.INPUT_REG)  # bitmask
+    INPUT_REG_OUT_P                  = RegisterMeta(0x2011, RegisterKind.INPUT_REG, scale=100.0, unit="W")
+    INPUT_REG_OUT_I                  = RegisterMeta(0x2012, RegisterKind.INPUT_REG, scale=0.1,   unit="A")
+    INPUT_REG_OUT_V                  = RegisterMeta(0x2013, RegisterKind.INPUT_REG, scale=0.1,   unit="V")
+    INPUT_REG_TANK_CAP_V             = RegisterMeta(0x2014, RegisterKind.INPUT_REG, scale=0.1,   unit="V")
+    INPUT_REG_FREQ                   = RegisterMeta(0x2015, RegisterKind.INPUT_REG, scale=0.01,  unit="Hz")
+    INPUT_REG_DEW_POINT_T            = RegisterMeta(0x2016, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
+    INPUT_REG_HUMIDITY               = RegisterMeta(0x2017, RegisterKind.INPUT_REG, scale=1.0, unit="%")
+    INPUT_REG_TIMER_REMAIN           = RegisterMeta(0x2018, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="s")
+    INPUT_REG_SLAVE_PA_ENABLE_MASK   = RegisterMeta(0x2019, RegisterKind.INPUT_REG)  # bitmask
     INPUT_REG_CONFIG_UPDATE          = RegisterMeta(0x201A, RegisterKind.INPUT_REG)
-    INPUT_REG_THERMO_REG_REGULATION  = RegisterMeta(0x201B, RegisterKind.INPUT_REG)
-    INPUT_REG_THERMO_REG_SP          = RegisterMeta(0x201C, RegisterKind.INPUT_REG, signed=True)
-    INPUT_REG_THERMO_REG_SENSOR_T    = RegisterMeta(0x201D, RegisterKind.INPUT_REG, signed=True)
+    INPUT_REG_THERMO_REG_REGULATION  = RegisterMeta(0x201B, RegisterKind.INPUT_REG)  # 0=I, 1=P
+    INPUT_REG_THERMO_REG_SP          = RegisterMeta(0x201C, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
+    INPUT_REG_THERMO_REG_SENSOR_T    = RegisterMeta(0x201D, RegisterKind.INPUT_REG, signed=True, scale=0.1, unit="K")
     # Firmware typo "ACIVE_PROFILE" fixed in MegaMain and ProductionPhase1.
     INPUT_REG_ACTIVE_PROFILE         = RegisterMeta(
         0x201E, RegisterKind.INPUT_REG,
         legacy_names=("INPUT_REG_ACIVE_PROFILE", "ACIVE_PROFILE"),
     )
-    INPUT_REG_HS_COOLANT_FLOW        = RegisterMeta(0x201F, RegisterKind.INPUT_REG)
-    INPUT_REG_HS2_COOLANT_FLOW       = RegisterMeta(0x2020, RegisterKind.INPUT_REG)
+    INPUT_REG_HS_COOLANT_FLOW        = RegisterMeta(0x201F, RegisterKind.INPUT_REG, scale=0.1, unit="lps")
+    INPUT_REG_HS2_COOLANT_FLOW       = RegisterMeta(0x2020, RegisterKind.INPUT_REG, scale=0.1, unit="lps")
     INPUT_REG_THERMO_REG_LIMIT       = RegisterMeta(
         0x2021, RegisterKind.INPUT_REG, branches=_WITH_EXT_THERMO,
     )
@@ -150,26 +154,29 @@ class Register(Enum):
     HOLD_REG_AOUT_ASSIGN            = RegisterMeta(0x3003, RegisterKind.HOLDING_REG)
     HOLD_REG_PA_ENABLE_MASK         = RegisterMeta(0x3004, RegisterKind.HOLDING_REG)
     HOLD_REG_PA_MAX_WORK_SET        = RegisterMeta(0x3005, RegisterKind.HOLDING_REG)
-    HOLD_REG_SP_I                   = RegisterMeta(0x3006, RegisterKind.HOLDING_REG)
-    HOLD_REG_SP_P                   = RegisterMeta(0x3007, RegisterKind.HOLDING_REG)
-    HOLD_REG_CAP_VAL                = RegisterMeta(0x3008, RegisterKind.HOLDING_REG)
-    HOLD_REG_CAP_EXP                = RegisterMeta(0x3009, RegisterKind.HOLDING_REG)
-    HOLD_REG_CAP_MAX_V              = RegisterMeta(0x300A, RegisterKind.HOLDING_REG)
-    HOLD_REG_HS_RATIO               = RegisterMeta(0x300B, RegisterKind.HOLDING_REG)
-    HOLD_REG_MAINS_NOM_V            = RegisterMeta(0x300C, RegisterKind.HOLDING_REG)
-    HOLD_REG_CAP_MAX_I              = RegisterMeta(0x300D, RegisterKind.HOLDING_REG)
-    HOLD_REG_TIMER_SP               = RegisterMeta(0x300E, RegisterKind.HOLDING_REG)
+    HOLD_REG_SP_I                   = RegisterMeta(0x3006, RegisterKind.HOLDING_REG, scale=0.01, unit="%")
+    HOLD_REG_SP_P                   = RegisterMeta(0x3007, RegisterKind.HOLDING_REG, scale=0.01, unit="%")
+    # Tank-capacitor value/exponent pair: physical farads = VAL/100 * 10^EXP.
+    # The library returns the raw scaled value (VAL/100) and the exponent
+    # separately; combine them via SmartPowerClient.read_capacitance().
+    HOLD_REG_CAP_VAL                = RegisterMeta(0x3008, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    HOLD_REG_CAP_EXP                = RegisterMeta(0x3009, RegisterKind.HOLDING_REG, signed=True)
+    HOLD_REG_CAP_MAX_V              = RegisterMeta(0x300A, RegisterKind.HOLDING_REG, scale=0.1, unit="V")
+    HOLD_REG_HS_RATIO               = RegisterMeta(0x300B, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    HOLD_REG_MAINS_NOM_V            = RegisterMeta(0x300C, RegisterKind.HOLDING_REG, scale=0.1, unit="V")
+    HOLD_REG_CAP_MAX_I              = RegisterMeta(0x300D, RegisterKind.HOLDING_REG, signed=True, scale=1.0, unit="A")
+    HOLD_REG_TIMER_SP               = RegisterMeta(0x300E, RegisterKind.HOLDING_REG, signed=True, scale=0.1, unit="s")
     HOLD_REG_SLAVE_PA_ENABLE_MASK   = RegisterMeta(0x300F, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_HS_RATIO        = RegisterMeta(0x3010, RegisterKind.HOLDING_REG)
-    HOLD_REG_CAP_MAX_P              = RegisterMeta(0x3011, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_CAP_VAL         = RegisterMeta(0x3012, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_CAP_EXP         = RegisterMeta(0x3013, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_CAP_MAX_V       = RegisterMeta(0x3014, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_CAP_MAX_I       = RegisterMeta(0x3015, RegisterKind.HOLDING_REG)
-    HOLD_REG_SECOND_CAP_MAX_P       = RegisterMeta(0x3016, RegisterKind.HOLDING_REG)
+    HOLD_REG_SECOND_HS_RATIO        = RegisterMeta(0x3010, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    HOLD_REG_CAP_MAX_P              = RegisterMeta(0x3011, RegisterKind.HOLDING_REG, signed=True, scale=10000.0, unit="VA")
+    HOLD_REG_SECOND_CAP_VAL         = RegisterMeta(0x3012, RegisterKind.HOLDING_REG, scale=0.01, unit="")
+    HOLD_REG_SECOND_CAP_EXP         = RegisterMeta(0x3013, RegisterKind.HOLDING_REG, signed=True)
+    HOLD_REG_SECOND_CAP_MAX_V       = RegisterMeta(0x3014, RegisterKind.HOLDING_REG, scale=0.1, unit="V")
+    HOLD_REG_SECOND_CAP_MAX_I       = RegisterMeta(0x3015, RegisterKind.HOLDING_REG, signed=True, scale=1.0, unit="A")
+    HOLD_REG_SECOND_CAP_MAX_P       = RegisterMeta(0x3016, RegisterKind.HOLDING_REG, signed=True, scale=10000.0, unit="VA")
     HOLD_REG_REQ_PROFILE            = RegisterMeta(0x3017, RegisterKind.HOLDING_REG)
     HOLD_REG_THERMO_REG_EXT_SP      = RegisterMeta(
-        0x3018, RegisterKind.HOLDING_REG, branches=_WITH_EXT_THERMO, signed=True,
+        0x3018, RegisterKind.HOLDING_REG, branches=_WITH_EXT_THERMO, signed=True, scale=0.1, unit="K",
     )
     HOLD_REG_THERMO_REG_EXT_LIMIT   = RegisterMeta(
         0x3019, RegisterKind.HOLDING_REG, branches=_WITH_EXT_THERMO,

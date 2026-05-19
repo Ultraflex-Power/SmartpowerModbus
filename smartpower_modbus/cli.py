@@ -26,6 +26,7 @@ from .client import DEFAULT_BAUDRATE, SmartPowerClient
 from .exceptions import SmartPowerError
 from .models import SmartPowerModel
 from .registers import Register, RegisterKind
+from .units import TemperatureUnit, is_temperature_unit
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -48,18 +49,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baud", type=int, default=DEFAULT_BAUDRATE, help=f"Baud rate (default {DEFAULT_BAUDRATE})")
     p.add_argument("--timeout", type=float, default=1.0, help="Response timeout in seconds")
     p.add_argument("--retries", type=int, default=2, help="Retries on transient errors")
+    p.add_argument(
+        "--temperature-unit", choices=["C", "K", "F"], default="C",
+        help="Display unit for temperature registers when --interpret is used (default: C)",
+    )
     p.add_argument("-v", "--verbose", action="count", default=0, help="-v: INFO, -vv: DEBUG")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp_read = sub.add_parser("read", help="Read one or more registers by name")
     sp_read.add_argument("names", nargs="+", help="Register names (canonical or legacy)")
+    sp_read.add_argument(
+        "-i", "--interpret", action="store_true",
+        help="Apply scaling and temperature-unit conversion (per the Modbus spec)",
+    )
 
     sp_write = sub.add_parser("write", help="Write a single register")
     sp_write.add_argument("name", help="Register name")
-    sp_write.add_argument("value", help="Integer for holding regs, 0/1/true/false for coils")
+    sp_write.add_argument(
+        "value", help="Integer raw value, or physical value with --interpret; 0/1/true/false for coils",
+    )
+    sp_write.add_argument(
+        "-i", "--interpret", action="store_true",
+        help="Treat VALUE as a physical quantity (Amps/Volts/Watts/°C/...) and apply scaling",
+    )
 
-    sub.add_parser("dump", help="Read every register valid on the selected model")
+    sp_dump = sub.add_parser("dump", help="Read every register valid on the selected model")
+    sp_dump.add_argument(
+        "-i", "--interpret", action="store_true",
+        help="Apply scaling and temperature-unit conversion to every register",
+    )
     sub.add_parser("probe", help="Identify the model by probing diverging addresses")
     sub.add_parser(
         "identify",
@@ -71,7 +90,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _parse_value(reg: Register, raw: str) -> int | bool:
+def _parse_raw_value(reg: Register, raw: str) -> int | bool:
+    """Parse a raw value string (no scaling)."""
     if reg.kind is RegisterKind.COIL:
         lo = raw.strip().lower()
         if lo in ("1", "true", "on", "yes"):
@@ -87,12 +107,38 @@ def _parse_value(reg: Register, raw: str) -> int | bool:
         raise SystemExit(f"Cannot interpret {raw!r} as an integer: {exc}")
 
 
-def _format(value: int | bool, reg: Register) -> str:
+def _parse_interpreted_value(reg: Register, raw: str) -> float | int | bool:
+    """Parse a physical-value string for an interpreted write."""
+    if reg.kind is RegisterKind.COIL:
+        return _parse_raw_value(reg, raw)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise SystemExit(f"Cannot interpret {raw!r} as a number: {exc}")
+
+
+def _format_raw(value: int | bool, reg: Register) -> str:
     if isinstance(value, bool):
         return "1" if value else "0"
     if reg.signed:
         return f"{value} (0x{value & 0xFFFF:04X})"
     return f"{value} (0x{value:04X})"
+
+
+def _format_interpreted(value, reg: Register, temp_unit: TemperatureUnit) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if is_temperature_unit(reg.unit):
+        return f"{value:.2f} °{temp_unit.value}" if temp_unit is not TemperatureUnit.KELVIN else f"{value:.2f} K"
+    if reg.unit:
+        # Float values get 4 sig figs; integers stay integers.
+        if isinstance(value, float):
+            return f"{value:g} {reg.unit}"
+        return f"{value} {reg.unit}"
+    # No unit declared — print the raw int.
+    if isinstance(value, float):
+        return f"{value:g}"
+    return f"{value} (0x{value & 0xFFFF:04X})"
 
 
 def _resolve_model_arg(args) -> SmartPowerModel | None:
@@ -159,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    temp_unit = TemperatureUnit.from_name(args.temperature_unit)
+
     try:
         with SmartPowerClient(
             port=args.port,
@@ -167,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             baudrate=args.baud,
             timeout=args.timeout,
             retries=args.retries,
+            temperature_unit=temp_unit,
         ) as client:
             if args.cmd == "identify":
                 info = client.read_device_info()
@@ -179,17 +228,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.cmd == "read":
                 for name in args.names:
                     reg = Register.from_name(name)
-                    value = client.read(reg)
-                    print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format(value, reg)}")
+                    if args.interpret:
+                        value = client.read_value(reg)
+                        print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_interpreted(value, reg, temp_unit)}")
+                    else:
+                        value = client.read(reg)
+                        print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_raw(value, reg)}")
             elif args.cmd == "write":
                 reg = Register.from_name(args.name)
-                value = _parse_value(reg, args.value)
-                client.write(reg, value)
-                readback = client.read(reg)
-                print(f"wrote {reg.name} = {value!r}; read back {_format(readback, reg)}")
+                if args.interpret:
+                    value = _parse_interpreted_value(reg, args.value)
+                    client.write_value(reg, value)
+                    readback = client.read_value(reg)
+                    print(
+                        f"wrote {reg.name} = {value!r}; "
+                        f"read back {_format_interpreted(readback, reg, temp_unit)}"
+                    )
+                else:
+                    value = _parse_raw_value(reg, args.value)
+                    client.write(reg, value)
+                    readback = client.read(reg)
+                    print(f"wrote {reg.name} = {value!r}; read back {_format_raw(readback, reg)}")
             elif args.cmd == "dump":
                 for reg, value in client.dump().items():
-                    print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format(value, reg)}")
+                    if args.interpret and not isinstance(value, bool):
+                        # Re-interpret the raw value we just got, rather than
+                        # paying for a second wire round-trip.
+                        interpreted = (
+                            value * reg.scale
+                            if reg.scale != 1.0 or is_temperature_unit(reg.unit)
+                            else value
+                        )
+                        if is_temperature_unit(reg.unit):
+                            from .units import kelvin_to
+                            interpreted = kelvin_to(interpreted, temp_unit)
+                        print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_interpreted(interpreted, reg, temp_unit)}")
+                    else:
+                        print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_raw(value, reg)}")
             elif args.cmd == "probe":
                 candidates = client.probe_model()
                 print("Detected model candidates:")

@@ -17,12 +17,12 @@ Requires Python 3.10+ and `pymodbus>=3.7,<4`.
 
 The public API talks in **product model names** only:
 
-| `SmartPowerModel` member  | Public name (`.value`)  | `PRODUCT_CODE` | Customer-facing platform |
-|---------------------------|-------------------------|----------------|--------------------------|
-| `SmartPowerModel.SOLO`    | `SmartPowerSolo`        | `55400400`     | SmartPower Solo          |
-| `SmartPowerModel.GEN_1_0` | `SmartPowerGen_1.0`     | `55370250`     | SmartPower Gen 1.0       |
-| `SmartPowerModel.GEN_1_5` | `SmartPowerGen_1.5`     | `55370111`     | SmartPower Gen 1.5       |
-| `SmartPowerModel.GEN_2_0` | `SmartPowerGen_2.0`     | `55370112`     | SmartPower Gen 2.0       |
+| `SmartPowerModel` member  | Public name (`.value`) | `PRODUCT_CODE` | Customer-facing platform |
+| ------------------------- | ---------------------- | -------------- | ------------------------ |
+| `SmartPowerModel.SOLO`    | `SmartPowerSolo`       | `55400400`     | SmartPower Solo          |
+| `SmartPowerModel.GEN_1_0` | `SmartPowerGen_1.0`    | `55370250`     | SmartPower Gen 1.0       |
+| `SmartPowerModel.GEN_1_5` | `SmartPowerGen_1.5`    | `55370111`     | SmartPower Gen 1.5       |
+| `SmartPowerModel.GEN_2_0` | `SmartPowerGen_2.0`    | `55370112`     | SmartPower Gen 2.0       |
 
 The `PRODUCT_CODE` column shows the value the firmware returns over
 Modbus FC 0x2B/0x0E (Read Device Identification). The library uses this
@@ -69,7 +69,47 @@ The `model=` argument accepts:
 - the canonical public string: `"SmartPowerGen_2.0"`
 - the Python member name: `"GEN_2_0"`
 
-Low-level access (raw addresses, no validation):
+### Interpreted (scaled) reads and writes
+
+`read()` and `write()` operate on raw 16-bit register values. For
+physical-unit access — Amps, Volts, Watts, Hz, °C, … — use
+`read_value()` / `write_value()`. The scaling factors and SI units come
+straight from the Modbus spec
+(`Doc/SDR-1MOD-537-250-00_A6_USP_Modbus.doc`):
+
+```python
+out_p_W  = client.read_value(Register.INPUT_REG_OUT_P)        # Watts (float)
+out_i_A  = client.read_value(Register.INPUT_REG_OUT_I)        # Amps (float)
+in_t_C   = client.read_value(Register.INPUT_REG_IN_COOLANT_T) # °C (float, default)
+freq_Hz  = client.read_value(Register.INPUT_REG_FREQ)         # Hz (float)
+
+client.write_value(Register.HOLD_REG_SP_P, 50.0)              # 50.00 %
+client.write_value(Register.HOLD_REG_THERMO_REG_EXT_SP, 25.0) # 25 °C
+```
+
+Temperature unit can be set on the client (default Celsius) or
+overridden per call. Conversions are applied on top of the firmware's
+Kelvin encoding:
+
+```python
+from smartpower_modbus import SmartPowerClient, TemperatureUnit
+
+with SmartPowerClient(
+    "COM5", slave_id=1, model=SmartPowerModel.GEN_2_0,
+    temperature_unit=TemperatureUnit.FAHRENHEIT,
+) as client:
+    print(client.read_value(Register.INPUT_REG_IN_COOLANT_T))  # °F
+
+    # One-off override:
+    in_k = client.read_value(
+        Register.INPUT_REG_IN_COOLANT_T, temperature_unit="K",
+    )
+```
+
+Equal-tank-capacitor value is a two-register pair (value + exponent);
+`read_capacitance()` returns it as a single float in Farads.
+
+### Low-level (raw addresses, no validation)
 
 ```python
 values = client.read_holding(0x3007, count=2)
@@ -142,13 +182,39 @@ smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 read OUT_P OUT_I 
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 write HOLD_REG_SP_P 50
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 dump
 smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 probe
-smartpower-cli --port COM5 --slave 1                            identify
+smartpower-cli --port COM5 --slave 1 identify
 smartpower-cli --model SmartPowerGen_2.0 list-registers
 smartpower-cli list-models
 ```
 
 `identify` is the only wire-touching subcommand that does not need
 `--model` — it auto-detects via `PRODUCT_CODE`.
+
+### CLI: interpreted reads/writes and temperature units
+
+Pass `-i` / `--interpret` to `read`, `write`, or `dump` to apply the
+firmware's scaling factor and SI units. Combine with
+`--temperature-unit {C,K,F}` (default `C`) to pick the temperature
+display unit.
+
+```powershell
+# Raw uint16:
+smartpower-cli --port COM6 --slave 1 --model SmartPowerGen_1.0 read OUT_I IN_COOLANT_T
+# INPUT_REG_OUT_I        0x2012  =  20 (0x0014)
+# INPUT_REG_IN_COOLANT_T 0x200B  =  2981 (0x0BA5)
+
+# Interpreted (default Celsius):
+smartpower-cli --port COM6 --slave 1 --model SmartPowerGen_1.0 read -i OUT_I IN_COOLANT_T
+# INPUT_REG_OUT_I        0x2012  =  2 A
+# INPUT_REG_IN_COOLANT_T 0x200B  =  24.95 °C
+
+# Same data, Fahrenheit:
+smartpower-cli --port COM6 --slave 1 --model SmartPowerGen_1.0 --temperature-unit F read -i IN_COOLANT_T
+# INPUT_REG_IN_COOLANT_T 0x200B  =  76.91 °F
+
+# Write a temperature setpoint in Celsius (the firmware stores Kelvin x10):
+smartpower-cli --port COM6 --slave 1 --model SmartPowerGen_1.0 write -i HOLD_REG_THERMO_REG_EXT_SP 25
+```
 
 If the `smartpower-cli` entry point isn't on PATH, use
 `python -m smartpower_modbus.cli ...`.

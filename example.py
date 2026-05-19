@@ -22,6 +22,7 @@ from smartpower_modbus import (
     SmartPowerClient,
     SmartPowerError,
     SmartPowerModel,
+    TemperatureUnit,
 )
 
 
@@ -37,6 +38,10 @@ def main() -> int:
         ),
     )
     parser.add_argument("--baud", type=int, default=38400)
+    parser.add_argument(
+        "--temperature-unit", choices=["C", "K", "F"], default="C",
+        help="Display unit for temperature registers (default: C)",
+    )
     parser.add_argument("--sp-p", type=int, default=None,
                         help="If given, attempt to write this SP_P value")
     args = parser.parse_args()
@@ -45,6 +50,7 @@ def main() -> int:
 
     # Pass None to let the client auto-identify the model on connect.
     model = SmartPowerModel.from_name(args.model) if args.model else None
+    temp_unit = TemperatureUnit.from_name(args.temperature_unit)
 
     # 1) Open the connection. Context manager handles connect()/close().
     #    When model is None, connect() auto-identifies via FC 0x2B
@@ -57,6 +63,7 @@ def main() -> int:
             baudrate=args.baud,
             timeout=1.0,
             retries=2,
+            temperature_unit=temp_unit,
         ) as client:
 
             # 2) Print what the device reports about itself.
@@ -68,18 +75,20 @@ def main() -> int:
             )
             print(f"Resolved model: {client.model.value}")
 
-            # 3) Read several variables. Coils/discretes return bool;
-            #    input/holding registers return int (signed if declared so).
-            print("\nReading telemetry:")
+            # 3) Read telemetry. Two parallel passes — raw uint16 and the
+            #    scaled / unit-converted interpretation — so the difference
+            #    is visible side by side.
             telemetry = [
                 Register.INPUT_REG_OUT_P,
                 Register.INPUT_REG_OUT_I,
                 Register.INPUT_REG_OUT_V,
-                Register.INPUT_REG_IN_COOLANT_T,   # signed int16 (degrees C)
-                Register.INPUT_REG_OUT_COOLANT_T,  # signed int16
-                Register.INPUT_FAULT,              # discrete input → bool
+                Register.INPUT_REG_FREQ,
+                Register.INPUT_REG_IN_COOLANT_T,    # K x 10, shown in temp_unit
+                Register.INPUT_REG_OUT_COOLANT_T,
+                Register.INPUT_FAULT,               # discrete input
                 Register.INPUT_READY,
             ]
+            print("\nReading telemetry (raw uint16):")
             for reg in telemetry:
                 try:
                     value = client.read(reg)
@@ -87,6 +96,18 @@ def main() -> int:
                     print(f"  {reg.name}: ERROR — {exc}")
                 else:
                     print(f"  {reg.name:30s} = {value!r}")
+
+            print(f"\nReading telemetry (interpreted; temperatures in {temp_unit.value}):")
+            for reg in telemetry:
+                try:
+                    value = client.read_value(reg)
+                except SmartPowerError as exc:
+                    print(f"  {reg.name}: ERROR — {exc}")
+                else:
+                    suffix = reg.unit
+                    if suffix == "K":
+                        suffix = f"°{temp_unit.value}" if temp_unit is not TemperatureUnit.KELVIN else "K"
+                    print(f"  {reg.name:30s} = {value} {suffix}".rstrip())
 
             # 4) Write a variable safely.
             if args.sp_p is not None:

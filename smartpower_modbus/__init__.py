@@ -43,6 +43,7 @@ from .exceptions import (
 )
 from .models import SmartPowerModel
 from .registers import Register, RegisterKind, RegisterMeta, signed16, unsigned16
+from .units import TemperatureUnit
 
 # FirmwareBranch is an internal implementation detail; it is importable for
 # the rare case of inspecting which firmware branch underlies a model, but
@@ -67,6 +68,7 @@ __all__ = [
     "SmartPowerClient",
     "SmartPowerError",
     "SmartPowerModel",
+    "TemperatureUnit",
     "UnsupportedFirmwareBranchError",
     "UnsupportedRegisterError",
     "signed16",

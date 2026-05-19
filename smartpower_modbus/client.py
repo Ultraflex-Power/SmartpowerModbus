@@ -23,6 +23,12 @@ from .registers import (
     signed16,
     unsigned16,
 )
+from .units import (
+    TemperatureUnit,
+    is_temperature_unit,
+    kelvin_from,
+    kelvin_to,
+)
 from ._transport import _Transport
 
 logger = logging.getLogger(__name__)
@@ -83,8 +89,13 @@ class SmartPowerClient:
         bytesize: int = 8,
         timeout: float = 1.0,
         retries: int = 2,
+        temperature_unit: TemperatureUnit | str = TemperatureUnit.CELSIUS,
         branch=None,
     ) -> None:
+        # Accept a string like "C"/"K"/"F" for ergonomics; coerce to enum.
+        if isinstance(temperature_unit, str):
+            temperature_unit = TemperatureUnit.from_name(temperature_unit)
+        self.temperature_unit: TemperatureUnit = temperature_unit
         # Backward-compat: accept the deprecated ``branch=`` kwarg.
         if model is not None and branch is not None:
             raise TypeError("Pass either `model=` or `branch=`, not both")
@@ -261,6 +272,116 @@ class SmartPowerClient:
         for reg in regs:
             out[reg] = self.read(reg)
         return out
+
+    # ----- interpreted read/write (scaling + temperature units) -----
+
+    def read_value(
+        self,
+        reg: Register,
+        *,
+        temperature_unit: TemperatureUnit | str | None = None,
+    ) -> float | int | bool:
+        """Read a register and return its **interpreted** physical value.
+
+        Applies the register's ``scale`` factor and, for temperatures
+        (``unit == "K"``), converts to ``temperature_unit`` (defaults to
+        the client's configured unit — Celsius unless overridden in the
+        constructor).
+
+        Returns:
+            - ``bool`` for coils / discrete inputs (unchanged from ``read()``).
+            - ``float`` for registers whose ``scale != 1.0`` or whose
+              ``unit`` is a temperature.
+            - ``int`` for registers with ``scale == 1.0`` and no unit
+              (i.e. enum / bitmask / counter registers that don't scale).
+        """
+        raw = self.read(reg)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(temperature_unit, str):
+            temperature_unit = TemperatureUnit.from_name(temperature_unit)
+        unit_out = temperature_unit or self.temperature_unit
+
+        # Apply the firmware-side scaling first.
+        if reg.scale == 1.0 and not is_temperature_unit(reg.unit):
+            value = raw  # keep int — no fractional component
+        else:
+            value = raw * reg.scale
+
+        # Temperatures: convert from K (the firmware unit) to the caller's unit.
+        if is_temperature_unit(reg.unit):
+            return kelvin_to(value, unit_out)
+        return value
+
+    def write_value(
+        self,
+        reg: Register,
+        value: float | int | bool,
+        *,
+        temperature_unit: TemperatureUnit | str | None = None,
+    ) -> None:
+        """Inverse of :meth:`read_value` — convert ``value`` to a raw
+        uint16 (rounding to nearest) and write it.
+
+        ``value`` is in the natural physical unit for the register:
+            - Amps for currents, Volts for voltages, Watts for powers,
+              Hz for frequency, % for setpoints, lps for flows, sec for
+              timers, V·A for max-power limits.
+            - For temperatures (``reg.unit == "K"``), ``value`` is in
+              ``temperature_unit`` (or the client's configured unit if
+              omitted) — Celsius by default.
+            - For coils, ``value`` is bool.
+            - For enum / bitmask / counter registers (``scale == 1.0``,
+              no unit), ``value`` is the raw int.
+        """
+        if reg.kind is RegisterKind.COIL:
+            self.write(reg, value)
+            return
+
+        if isinstance(temperature_unit, str):
+            temperature_unit = TemperatureUnit.from_name(temperature_unit)
+        unit_in = temperature_unit or self.temperature_unit
+
+        # Temperatures: caller's unit → Kelvin first.
+        if is_temperature_unit(reg.unit):
+            value = kelvin_from(float(value), unit_in)
+
+        # Invert the firmware-side scaling. Round half-to-even — saner
+        # than truncation for setpoints near integer boundaries.
+        if reg.scale == 1.0 and not is_temperature_unit(reg.unit):
+            raw = int(value)
+        else:
+            raw = int(round(value / reg.scale))
+
+        # Range-check before delegating to write() so the user gets a
+        # meaningful error message that mentions the physical value.
+        if reg.signed:
+            if not -0x8000 <= raw <= 0x7FFF:
+                raise InvalidValueError(
+                    f"Value {value} (raw {raw}) out of range for {reg.name} "
+                    f"(int16, scale={reg.scale}, unit={reg.unit or 'raw'})"
+                )
+        else:
+            if not 0 <= raw <= 0xFFFF:
+                raise InvalidValueError(
+                    f"Value {value} (raw {raw}) out of range for {reg.name} "
+                    f"(uint16, scale={reg.scale}, unit={reg.unit or 'raw'})"
+                )
+
+        self.write(reg, raw)
+
+    # ----- composite: tank-capacitor value+exponent -----
+
+    def read_capacitance(self) -> float:
+        """Read the equal-tank-capacitor value as a single float in Farads.
+
+        The firmware stores capacitance as a value/exponent pair across
+        ``HOLD_REG_CAP_VAL`` (``0x3008``) and ``HOLD_REG_CAP_EXP``
+        (``0x3009``); the physical value is ``VAL/100 * 10^EXP`` F.
+        """
+        val_raw = self.read(Register.HOLD_REG_CAP_VAL)
+        exp_raw = self.read(Register.HOLD_REG_CAP_EXP)
+        return (val_raw / 100.0) * (10.0 ** exp_raw)
 
     def dump(self) -> dict[Register, int | bool]:
         """Read every register exposed by the configured model."""
