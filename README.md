@@ -105,8 +105,31 @@ with SmartPowerClient(
     )
 ```
 
-Equal-tank-capacitor value is a two-register pair (value + exponent);
-`read_capacitance()` returns it as a single float in Farads.
+#### Tank-capacitor read / write
+
+The firmware exposes two tank-capacitor pairs as adjacent (value + exponent)
+holding registers:
+
+- `HOLD_REG_CAP_VAL` (`0x3008`) / `HOLD_REG_CAP_EXP` (`0x3009`)
+- `HOLD_REG_SECOND_CAP_VAL` (`0x3012`) / `HOLD_REG_SECOND_CAP_EXP` (`0x3013`)
+
+For convenience, the client exposes each pair as a single Farads-valued
+float:
+
+```python
+c1 = client.read_capacitance()         # primary,   single float in F
+c2 = client.read_second_capacitance()  # secondary, single float in F
+client.write_capacitance(100e-6)       # 100 µF, atomic 2-register write
+client.write_second_capacitance(1e-3)  # 1 mF
+```
+
+`write_capacitance` chooses the (`val`, `exp`) pair that maximises uint16
+precision (mantissa in `[6554, 65535]` whenever possible), so a round-trip
+through `read_capacitance` preserves the input to ~4 decimal digits.
+Negative, `nan`/`inf`, or out-of-range values (exponent outside `[-30, 6]`)
+raise `InvalidValueError`. Both reads and writes use a single Modbus
+transaction so the value / exponent pair cannot be torn by a concurrent
+peer.
 
 ### Low-level (raw addresses, no validation)
 
