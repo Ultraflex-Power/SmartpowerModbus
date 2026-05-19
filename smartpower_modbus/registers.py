@@ -31,14 +31,22 @@ from .branches import FirmwareBranch
 from .exceptions import UnsupportedRegisterError
 
 
-_SOLO    = FirmwareBranch.SMARTPOWER_SOLO
-_GEN_1_0 = FirmwareBranch.SMARTPOWER_GEN_1_0
-_GEN_1_5 = FirmwareBranch.SMARTPOWER_GEN_1_5
-_GEN_2_0 = FirmwareBranch.SMARTPOWER_GEN_2_0
+# Firmware-branch shortcuts used in the Register table below. These
+# correspond, via the centralized models.py mapping, to:
+#   SOLO firmware    → SmartPowerSolo
+#   PRODPHASE1 fw    → SmartPowerGen_1.0
+#   GEN_1_5_MOD fw   → SmartPowerGen_1.5
+#   MEGAMAIN fw      → SmartPowerGen_2.0
+_FB_SOLO       = FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE
+_FB_PRODPHASE1 = FirmwareBranch.PRODUCTION_PHASE_1_FAST_1_15_BASE
+_FB_GEN_1_5    = FirmwareBranch.GEN_1_5_MOD_5537_110_24_OUTPUTS_PWM_LIMIT
+_FB_MEGAMAIN   = FirmwareBranch.MEGA_MAIN
 
-_ALL = frozenset({_SOLO, _GEN_1_0, _GEN_1_5, _GEN_2_0})
-# Extended thermo regulation registers exist only on SOLO and Gen 1.5.
-_WITH_EXT_THERMO = frozenset({_SOLO, _GEN_1_5})
+_ALL = frozenset({_FB_SOLO, _FB_PRODPHASE1, _FB_GEN_1_5, _FB_MEGAMAIN})
+# Extended thermo registers exist only in the SngleModule and
+# ProductionPhase1 firmware branches — i.e. on the SmartPowerSolo and
+# SmartPowerGen_1.0 models.
+_WITH_EXT_THERMO = frozenset({_FB_SOLO, _FB_PRODPHASE1})
 
 
 class RegisterKind(Enum):
@@ -197,6 +205,12 @@ class Register(Enum):
         return self.value.legacy_names
 
     @property
+    def models(self) -> "frozenset":
+        """The set of public ``SmartPowerModel`` values that expose this register."""
+        from .models import _BRANCH_TO_MODEL
+        return frozenset(_BRANCH_TO_MODEL[fb] for fb in self.branches)
+
+    @property
     def is_writable(self) -> bool:
         return self.kind in (RegisterKind.COIL, RegisterKind.HOLDING_REG)
 
@@ -229,16 +243,39 @@ class Register(Enum):
 
     @classmethod
     def for_branch(cls, branch: FirmwareBranch) -> "frozenset[Register]":
+        """Registers exposed by a given firmware branch (internal helper)."""
         return frozenset(r for r in cls if branch in r.branches)
 
+    @classmethod
+    def for_model(cls, model) -> "frozenset[Register]":
+        """Registers exposed by the given ``SmartPowerModel``."""
+        fb = model.firmware_branch
+        return frozenset(r for r in cls if fb in r.branches)
 
-def assert_supported(reg: Register, branch: FirmwareBranch) -> None:
-    """Raise ``UnsupportedRegisterError`` if ``reg`` is not exposed by ``branch``."""
-    if branch not in reg.branches:
+
+def assert_supported(reg: Register, target) -> None:
+    """Raise ``UnsupportedRegisterError`` if ``reg`` is not exposed by ``target``.
+
+    ``target`` may be a ``SmartPowerModel`` (public) or a ``FirmwareBranch``
+    (internal). Public callers should pass a model.
+    """
+    from .models import SmartPowerModel
+    if isinstance(target, SmartPowerModel):
+        fb = target.firmware_branch
+        target_label = target.value
+    elif isinstance(target, FirmwareBranch):
+        fb = target
+        target_label = target.value
+    else:
+        raise TypeError(
+            f"assert_supported target must be SmartPowerModel or FirmwareBranch, "
+            f"got {type(target).__name__}"
+        )
+    if fb not in reg.branches:
         raise UnsupportedRegisterError(
             f"Register {reg.name} (0x{reg.addr:04X}) is not available on "
-            f"firmware branch {branch.value}. Available on: "
-            + ", ".join(b.value for b in reg.branches)
+            f"model {target_label}. Available on models: "
+            + ", ".join(m.value for m in reg.models)
         )
 
 

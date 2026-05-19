@@ -3,10 +3,11 @@ read a handful of variables, write a setpoint safely, and close.
 
 Run with::
 
-    python example.py --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0
+    python example.py --port COM5 --slave 1 --model SmartPowerGen_2.0
 
-The ``--branch`` argument accepts either the platform identifier
-(``SMARTPOWER_GEN_2_0``) or the firmware-repo branch string (``MegaMain``).
+``--model`` accepts the public SmartPower model name. Known values are
+``SmartPowerSolo``, ``SmartPowerGen_1.0``, ``SmartPowerGen_1.5``,
+``SmartPowerGen_2.0``.
 """
 
 from __future__ import annotations
@@ -16,11 +17,11 @@ import logging
 import sys
 
 from smartpower_modbus import (
-    FirmwareBranch,
     InvalidValueError,
     Register,
     SmartPowerClient,
     SmartPowerError,
+    SmartPowerModel,
 )
 
 
@@ -29,11 +30,8 @@ def main() -> int:
     parser.add_argument("--port", required=True, help="Serial port (COM5 / /dev/ttyUSB0)")
     parser.add_argument("--slave", type=int, default=1, help="Modbus slave ID")
     parser.add_argument(
-        "--branch", default="SMARTPOWER_GEN_2_0",
-        help=(
-            "Platform identifier (e.g. SMARTPOWER_GEN_2_0) or firmware "
-            "branch string (e.g. MegaMain). Default: SMARTPOWER_GEN_2_0."
-        ),
+        "--model", default="SmartPowerGen_2.0",
+        help="Public SmartPower model name (default: SmartPowerGen_2.0)",
     )
     parser.add_argument("--baud", type=int, default=38400)
     parser.add_argument("--sp-p", type=int, default=None,
@@ -42,24 +40,24 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    branch = FirmwareBranch.from_name(args.branch)
+    model = SmartPowerModel.from_name(args.model)
 
     # 1) Open the connection. Context manager handles connect()/close().
     try:
         with SmartPowerClient(
             port=args.port,
             slave_id=args.slave,
-            branch=branch,
+            model=model,
             baudrate=args.baud,
             timeout=1.0,
             retries=2,
         ) as client:
 
-            # 2) Platform is already configured on the client. Quick probe
-            #    to confirm the device matches what we declared.
-            print(f"Probing platform (configured = {branch.name} / {branch.value}) ...")
-            candidates = client.probe_branch()
-            print(f"  device looks like: {[b.name for b in candidates]}")
+            # 2) Model is already configured on the client. Quick probe to
+            #    sanity-check the device matches what we declared.
+            print(f"Probing model (configured = {model.value}) ...")
+            candidates = client.probe_model()
+            print(f"  device looks like one of: {[m.value for m in candidates]}")
 
             # 3) Read several variables. Coils/discretes return bool;
             #    input/holding registers return int (signed if declared so).

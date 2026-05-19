@@ -24,7 +24,6 @@ from typing import Any
 import pytest
 
 from smartpower_modbus import (
-    FirmwareBranch,
     IllegalAddressError,
     IllegalValueError,
     InvalidValueError,
@@ -33,8 +32,10 @@ from smartpower_modbus import (
     ReadOnlyRegisterError,
     Register,
     SmartPowerClient,
+    SmartPowerModel,
     UnsupportedRegisterError,
 )
+from smartpower_modbus.branches import FirmwareBranch
 
 
 # ---------- Pymodbus response/exception fakes ----------
@@ -156,7 +157,7 @@ def fake_client():
 def client(fake_client):
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
+        model=SmartPowerModel.GEN_2_0,
         timeout=0.01, retries=0,
     )
     # Swap in our fake; bypasses the real serial open in connect().
@@ -244,8 +245,8 @@ def test_write_holding_rejects_bool(client):
 
 # ---------- Tests: branch + register validation ----------
 
-def test_read_unsupported_register_for_branch_raises(client):
-    # MegaMain does not expose THERMO_REG_LIMIT.
+def test_read_unsupported_register_for_model_raises(client):
+    # SmartPowerGen_2.0 does not expose THERMO_REG_LIMIT.
     with pytest.raises(UnsupportedRegisterError):
         client.read(Register.INPUT_REG_THERMO_REG_LIMIT)
 
@@ -298,7 +299,7 @@ def test_retries_on_timeout_but_not_on_illegal_address(fake_client):
 
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
+        model=SmartPowerModel.GEN_2_0,
         timeout=0.01, retries=2,
     )
     c._transport._client = fake_client
@@ -343,34 +344,74 @@ def test_low_level_write_coils_passes_through(client, fake_client):
 # ---------- Tests: dump and probe ----------
 
 def test_dump_skips_illegal_address(client, fake_client):
-    # Make every input-register read succeed but every holding-register read
-    # fail with an illegal-address response. Coils/discretes also succeed.
+    # Make every input-register read succeed but every holding-register
+    # read fail with an illegal-address response. Coils/discretes also
+    # succeed (FakeSerialClient default).
     fake_client.scripts.clear()
-    # Default factory in FakeSerialClient returns successful empty responses,
-    # so we just feed an _ExcResp for every holding read.
-    # 25 holding regs in MegaMain (0x3000..0x3017 + 0x3018 reserved):
-    n_hold = sum(1 for r in FirmwareBranch.SMARTPOWER_GEN_2_0.registers if r.kind.name == "HOLDING_REG")
+    n_hold = sum(
+        1 for r in SmartPowerModel.GEN_2_0.registers if r.kind.name == "HOLDING_REG"
+    )
     fake_client.script("read_holding_registers", *([_ExcResp(0x02)] * n_hold))
     result = client.dump()
-    # No holding registers should be present.
     hold_in_result = [r for r in result if r.kind.name == "HOLDING_REG"]
     assert hold_in_result == []
 
 
-def test_probe_branch_returns_ext_group_when_address_succeeds(client, fake_client):
+def test_probe_model_returns_ext_group_when_address_succeeds(client, fake_client):
     fake_client.script("read_input_registers", _Resp(registers=[123]))
-    candidates = client.probe_branch()
-    assert FirmwareBranch.SMARTPOWER_SOLO in candidates
-    assert FirmwareBranch.SMARTPOWER_GEN_1_5 in candidates
-    assert FirmwareBranch.SMARTPOWER_GEN_2_0 not in candidates
+    candidates = client.probe_model()
+    assert SmartPowerModel.SOLO in candidates
+    assert SmartPowerModel.GEN_1_0 in candidates
+    assert SmartPowerModel.GEN_2_0 not in candidates
 
 
-def test_probe_branch_returns_non_ext_group_on_illegal_address(client, fake_client):
+def test_probe_model_returns_non_ext_group_on_illegal_address(client, fake_client):
     fake_client.script("read_input_registers", _ExcResp(0x02))
-    candidates = client.probe_branch()
-    assert FirmwareBranch.SMARTPOWER_GEN_2_0 in candidates
-    assert FirmwareBranch.SMARTPOWER_GEN_1_0 in candidates
-    assert FirmwareBranch.SMARTPOWER_SOLO not in candidates
+    candidates = client.probe_model()
+    assert SmartPowerModel.GEN_2_0 in candidates
+    assert SmartPowerModel.GEN_1_5 in candidates
+    assert SmartPowerModel.SOLO not in candidates
+
+
+def test_probe_branch_is_deprecated_alias_returning_firmware_branches(client, fake_client):
+    """Old probe_branch() still works but emits a DeprecationWarning and
+    returns FirmwareBranch values (the legacy contract)."""
+    import warnings as _w
+    fake_client.script("read_input_registers", _Resp(registers=[7]))
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        candidates = client.probe_branch()
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE in candidates
+    assert FirmwareBranch.PRODUCTION_PHASE_1_FAST_1_15_BASE in candidates
+
+
+def test_deprecated_branch_kwarg_still_works(fake_client):
+    """SmartPowerClient(branch=...) is deprecated but still resolves."""
+    import warnings as _w
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        c = SmartPowerClient(
+            port="dummy", slave_id=1,
+            branch=FirmwareBranch.MEGA_MAIN,   # deprecated form
+            timeout=0.01, retries=0,
+        )
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert c.model is SmartPowerModel.GEN_2_0
+
+
+def test_client_rejects_both_model_and_branch():
+    with pytest.raises(TypeError):
+        SmartPowerClient(
+            port="dummy", slave_id=1,
+            model=SmartPowerModel.GEN_2_0,
+            branch=FirmwareBranch.MEGA_MAIN,
+        )
+
+
+def test_client_requires_model_arg():
+    with pytest.raises(TypeError):
+        SmartPowerClient(port="dummy", slave_id=1)
 
 
 # ---------- Tests: context manager ----------
@@ -378,7 +419,7 @@ def test_probe_branch_returns_non_ext_group_on_illegal_address(client, fake_clie
 def test_context_manager_connects_and_closes(fake_client):
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
+        model=SmartPowerModel.GEN_2_0,
         timeout=0.01, retries=0,
     )
     c._transport._client = fake_client

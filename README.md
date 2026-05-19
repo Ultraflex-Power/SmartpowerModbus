@@ -1,9 +1,9 @@
 # smartpower-modbus
 
-A Python library for Modbus RTU communication with SmartPower
-(`MOD-537-250`) control boards. Wraps [`pymodbus`](https://pypi.org/project/pymodbus/)
-with branch-aware typed register accessors, structured exceptions, and a
-small CLI.
+A Python library for Modbus RTU communication with SmartPower power-supply
+modules (`MOD-537-250` control board). Wraps
+[`pymodbus`](https://pypi.org/project/pymodbus/) with **model-aware** typed
+register accessors, structured exceptions, and a small CLI.
 
 ## Install
 
@@ -13,68 +13,57 @@ pip install -e .
 
 Requires Python 3.10+ and `pymodbus>=3.7,<4`.
 
-## Supported platforms
+## Supported SmartPower models
 
-Canonical `FirmwareBranch` identifiers are platform names. Each one maps to
-the exact firmware-repo branch where its `AppAddress_t` enum lives — the
-firmware branch string is the serialized contract and is what gets stored
-in configs and shown in logs.
+The public API talks in **product model names** only:
 
-| `FirmwareBranch` member  | Firmware branch (`.value`)                            | Platform           |
-|--------------------------|-------------------------------------------------------|--------------------|
-| `SMARTPOWER_SOLO`        | `SngleModule_5540_LF_MF_ExtPA_simple`                 | SmartPower Solo    |
-| `SMARTPOWER_GEN_1_0`     | `Gen_1_5_MOD-5537-110_24_outputs_pwm_limit`           | SmartPower Gen 1.0 |
-| `SMARTPOWER_GEN_1_5`     | `ProductionPhase1_Fast_1_15_base`                     | SmartPower Gen 1.5 |
-| `SMARTPOWER_GEN_2_0`     | `MegaMain`                                            | SmartPower Gen 2.0 |
+| `SmartPowerModel` member  | Public name (`.value`)  | Customer-facing platform |
+|---------------------------|-------------------------|--------------------------|
+| `SmartPowerModel.SOLO`    | `SmartPowerSolo`        | SmartPower Solo          |
+| `SmartPowerModel.GEN_1_0` | `SmartPowerGen_1.0`     | SmartPower Gen 1.0       |
+| `SmartPowerModel.GEN_1_5` | `SmartPowerGen_1.5`     | SmartPower Gen 1.5       |
+| `SmartPowerModel.GEN_2_0` | `SmartPowerGen_2.0`     | SmartPower Gen 2.0       |
 
-The firmware-repo branch names diverged from the product platforms over
-time — most notably the firmware branch literally called `Gen_1_5_…`
-actually carries the **Gen 1.0** firmware, and `ProductionPhase1_…`
-carries the **Gen 1.5** firmware. The platform identifier on the
-`FirmwareBranch` member is the canonical name.
+The mapping from these public model names to the firmware-repo branch that
+ships on each model is internal — see
+[`smartpower_modbus/models.py`](smartpower_modbus/models.py). The firmware
+branch names are implementation detail and may change without notice; the
+public model names will not.
 
-### Backward compatibility
-
-The previous Python identifiers are preserved as enum **aliases**:
-
-| Legacy identifier (still works)                | Canonical identifier   |
-|------------------------------------------------|------------------------|
-| `SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE`         | `SMARTPOWER_SOLO`      |
-| `MEGA_MAIN`                                    | `SMARTPOWER_GEN_2_0`   |
-| `PRODUCTION_PHASE_1_FAST_1_15_BASE`            | `SMARTPOWER_GEN_1_5`   |
-| `GEN_1_5_MOD_5537_110_24_OUTPUTS_PWM_LIMIT`    | `SMARTPOWER_GEN_1_0`   |
-
-`FirmwareBranch.MEGA_MAIN is FirmwareBranch.SMARTPOWER_GEN_2_0` is `True`,
-and `FirmwareBranch.from_name(...)` accepts either spelling plus the
-firmware branch string (`"MegaMain"`).
-
-### Per-platform register differences
+### Per-model register differences
 
 - The Gen 2.0 firmware renames `PA_COOLANT_FLOW` → `MCB_COOLANT_FLOW`
-  (same address `0x200E`).
-- Gen 2.0 and Gen 1.5 fix the typo `ACIVE_PROFILE` → `ACTIVE_PROFILE`
-  (same address `0x201E`).
+  (same address `0x200E`). Both spellings resolve via
+  `Register.from_name(...)`.
+- Gen 2.0 and Gen 1.5 fix the firmware-side typo `ACIVE_PROFILE` →
+  `ACTIVE_PROFILE` (same address `0x201E`). Both spellings resolve.
 - `INPUT_REG_THERMO_REG_LIMIT` (`0x2021`), `HOLD_REG_THERMO_REG_EXT_SP`
   (`0x3018`), and `HOLD_REG_THERMO_REG_EXT_LIMIT` (`0x3019`) exist only
-  on `SMARTPOWER_SOLO` and `SMARTPOWER_GEN_1_5`.
-
-The legacy register spellings remain accepted by `Register.from_name(...)`.
+  on **SmartPowerSolo** and **SmartPowerGen_1.0**. Reading or writing
+  them against the other models raises `UnsupportedRegisterError` before
+  any wire activity.
 
 ## Library usage
 
 ```python
-from smartpower_modbus import FirmwareBranch, Register, SmartPowerClient
+from smartpower_modbus import SmartPowerModel, Register, SmartPowerClient
 
 with SmartPowerClient(
-    port="COM5", slave_id=1, branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
+    port="COM5", slave_id=1, model=SmartPowerModel.GEN_2_0,
 ) as client:
-    out_p   = client.read(Register.INPUT_REG_OUT_P)         # int (uint16)
-    in_t    = client.read(Register.INPUT_REG_IN_COOLANT_T)  # int (int16, signed)
-    fault   = client.read(Register.INPUT_FAULT)             # bool (discrete input)
+    out_p = client.read(Register.INPUT_REG_OUT_P)           # int (uint16)
+    in_t  = client.read(Register.INPUT_REG_IN_COOLANT_T)    # int (int16, signed)
+    fault = client.read(Register.INPUT_FAULT)               # bool (discrete input)
 
     client.write(Register.HOLD_REG_SP_P, 50)
     assert client.read(Register.HOLD_REG_SP_P) == 50
 ```
+
+The `model=` argument accepts:
+
+- a `SmartPowerModel` member: `SmartPowerModel.GEN_2_0`
+- the canonical public string: `"SmartPowerGen_2.0"`
+- the Python member name: `"GEN_2_0"`
 
 Low-level access (raw addresses, no validation):
 
@@ -83,35 +72,52 @@ values = client.read_holding(0x3007, count=2)
 client.write_holding(0x3007, 50)
 ```
 
-Run the included walkthrough:
+Walkthrough script:
 
 ```powershell
-python example.py --port COM5 --slave 1 --branch MegaMain --sp-p 50
+python example.py --port COM5 --slave 1 --model SmartPowerGen_2.0 --sp-p 50
 ```
 
 ## CLI
 
-`--branch` accepts either the platform identifier (`SMARTPOWER_GEN_2_0`) or
-the firmware-repo branch string (`MegaMain`).
+`--model` accepts a public SmartPower model name.
 
 ```powershell
-smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 read OUT_P OUT_I OUT_V
-smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 write HOLD_REG_SP_P 50
-smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 dump
-smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 probe
-smartpower-cli --branch SMARTPOWER_GEN_2_0 list-registers
-smartpower-cli list-branches
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 read OUT_P OUT_I OUT_V
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 write HOLD_REG_SP_P 50
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 dump
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 probe
+smartpower-cli --model SmartPowerGen_2.0 list-registers
+smartpower-cli list-models
 ```
 
-If the `smartpower-cli` entry point isn't on PATH, you can equivalently use
-`python -m smartpower_modbus.cli ...` from the install environment.
+If the `smartpower-cli` entry point isn't on PATH, use
+`python -m smartpower_modbus.cli ...`.
+
+## Backward compatibility
+
+The following deprecated forms still work — each emits a
+`DeprecationWarning` and resolves to the equivalent public model:
+
+- **`SmartPowerClient(branch=...)`** — pass `model=` instead.
+- **`client.probe_branch()`** — use `client.probe_model()`.
+- **`client.branch`** attribute — use `client.model`.
+- **CLI `--branch`** — use `--model`.
+- **CLI `list-branches`** — use `list-models`.
+- **`SmartPowerModel.from_name("MegaMain")`** and other firmware-branch
+  strings — pass a public model name (e.g. `"SmartPowerGen_2.0"`).
+
+Internally, the `FirmwareBranch` enum is still available for advanced
+inspection (`SmartPowerModel.GEN_2_0.firmware_branch` returns it) but it is
+not part of the public surface — `from smartpower_modbus import …`
+deliberately exports `SmartPowerModel`, not `FirmwareBranch`.
 
 ## Errors
 
 All raised exceptions inherit from `SmartPowerError`:
 
-- `UnsupportedFirmwareBranchError` — branch name not recognised
-- `UnsupportedRegisterError` — register not exposed by the selected branch
+- `UnsupportedFirmwareBranchError` — model / branch name not recognised
+- `UnsupportedRegisterError` — register not exposed by the selected model
 - `ReadOnlyRegisterError` — attempted to write a discrete input / input register
 - `InvalidValueError` — value out of range or wrong type
 - `SerialPortError` — could not open or hold the serial port
@@ -120,17 +126,24 @@ All raised exceptions inherit from `SmartPowerError`:
   - `IllegalAddressError`, `IllegalValueError`, `SlaveDeviceFailureError` — Modbus
     exception responses 0x02 / 0x03 / 0x04, **not** retried
 
-## Adding a new firmware branch / platform
+## Adding a new SmartPower model
 
-1. `git show <branch>:App/Communication/ModBus.hpp` and diff `AppAddress_t`
-   against the four already-mapped branches.
+1. Add a new member to `SmartPowerModel` in
+   `smartpower_modbus/models.py` with the canonical public name as the
+   `.value` string.
 2. Add a new member to `FirmwareBranch` in
-   `smartpower_modbus/branches.py` with the platform-style identifier and
-   the exact firmware branch string as its `.value`.
-3. In `smartpower_modbus/registers.py`, add the new member to the
-   `branches=` argument of any existing `Register` that the new firmware
-   exposes, and add new `Register` members for any genuinely new addresses.
-4. Run `pytest tests/`.
+   `smartpower_modbus/branches.py` with the exact firmware-repo branch
+   name as its `.value`.
+3. Add the new model → branch pair to `_MODEL_TO_BRANCH` in `models.py`.
+   The integrity asserts at the bottom of `models.py` will fail at import
+   time if you forget.
+4. In `smartpower_modbus/registers.py`, append the new firmware branch to
+   the `branches=` set of any existing `Register` it exposes, and add
+   new `Register` members for any genuinely new addresses.
+5. Run `pytest tests/`.
+
+Public API never changes shape — only the contents of these enums and the
+mapping table do.
 
 ## Tests
 

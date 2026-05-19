@@ -1,15 +1,17 @@
 """``smartpower-cli`` — read, write, dump, and probe a SmartPower module.
 
-``--branch`` accepts either the platform identifier (``SMARTPOWER_GEN_2_0``)
-or the firmware-repo branch string (``MegaMain``). Both forms resolve to
-the same target.
+``--model`` accepts a public SmartPower model name (``SmartPowerGen_2.0``,
+``SmartPowerSolo``, etc.). The deprecated ``--branch`` flag still works
+and accepts the same value (a deprecation warning is printed).
 
 Examples::
 
-    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 read OUT_P OUT_I OUT_V
-    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 write HOLD_REG_SP_P 50
-    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 dump
-    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 probe
+    smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 read OUT_P OUT_I OUT_V
+    smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 write HOLD_REG_SP_P 50
+    smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 dump
+    smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 probe
+    smartpower-cli --model SmartPowerGen_2.0 list-registers
+    smartpower-cli list-models
 """
 
 from __future__ import annotations
@@ -17,11 +19,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import warnings
 from typing import Sequence
 
-from .branches import FirmwareBranch
 from .client import DEFAULT_BAUDRATE, SmartPowerClient
 from .exceptions import SmartPowerError
+from .models import SmartPowerModel
 from .registers import Register, RegisterKind
 
 
@@ -30,11 +33,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", help="Serial port (e.g. COM5, /dev/ttyUSB0). Required for read/write/dump/probe.")
     p.add_argument("--slave", type=int, help="Modbus slave ID (1..247). Required for read/write/dump/probe.")
     p.add_argument(
-        "--branch",
+        "--model",
         help=(
-            "Platform identifier (e.g. SMARTPOWER_GEN_2_0) or firmware branch "
-            "name (e.g. MegaMain). Required for everything except list-branches."
+            "Public SmartPower model name (SmartPowerSolo, SmartPowerGen_1.0, "
+            "SmartPowerGen_1.5, SmartPowerGen_2.0). Required for everything "
+            "except list-models / list-branches."
         ),
+    )
+    # Deprecated alias retained for back-compat; emits a DeprecationWarning.
+    p.add_argument(
+        "--branch", dest="branch_deprecated",
+        help=argparse.SUPPRESS,
     )
     p.add_argument("--baud", type=int, default=DEFAULT_BAUDRATE, help=f"Baud rate (default {DEFAULT_BAUDRATE})")
     p.add_argument("--timeout", type=float, default=1.0, help="Response timeout in seconds")
@@ -50,10 +59,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_write.add_argument("name", help="Register name")
     sp_write.add_argument("value", help="Integer for holding regs, 0/1/true/false for coils")
 
-    sub.add_parser("dump", help="Read every register valid on the selected branch")
-    sub.add_parser("probe", help="Identify the firmware branch by probing diverging addresses")
-    sub.add_parser("list-registers", help="List all registers valid on the selected branch")
-    sub.add_parser("list-branches", help="List all firmware branches known to this library")
+    sub.add_parser("dump", help="Read every register valid on the selected model")
+    sub.add_parser("probe", help="Identify the model by probing diverging addresses")
+    sub.add_parser("list-registers", help="List all registers valid on the selected model")
+    sub.add_parser("list-models", help="List all known SmartPower models")
+    # Deprecated alias.
+    sub.add_parser("list-branches", help=argparse.SUPPRESS)
 
     return p
 
@@ -82,7 +93,26 @@ def _format(value: int | bool, reg: Register) -> str:
     return f"{value} (0x{value:04X})"
 
 
+def _resolve_model_arg(args) -> SmartPowerModel | None:
+    """Return the SmartPowerModel from --model or the deprecated --branch."""
+    if args.model and args.branch_deprecated:
+        print("error: pass either --model or --branch, not both", file=sys.stderr)
+        raise SystemExit(2)
+    if args.branch_deprecated:
+        warnings.warn(
+            "--branch is deprecated; use --model SmartPowerGen_<N.N> instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return SmartPowerModel.from_name(args.branch_deprecated)
+    if args.model:
+        return SmartPowerModel.from_name(args.model)
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    # Show deprecation warnings to the user by default.
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"smartpower_modbus(\..*)?")
+
     args = _build_parser().parse_args(argv)
 
     if args.verbose >= 2:
@@ -90,24 +120,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.verbose >= 1:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    if args.cmd == "list-models":
+        for m in SmartPowerModel:
+            print(f"{m.value:22s}  (firmware branch: {m.firmware_branch.value})")
+        return 0
     if args.cmd == "list-branches":
-        # Show both the platform identifier and the firmware-repo branch
-        # string. Either one is accepted by --branch.
-        for b in FirmwareBranch:
-            print(f"{b.name:22s}  {b.value}")
+        warnings.warn(
+            "`list-branches` is deprecated; use `list-models`.",
+            DeprecationWarning, stacklevel=2,
+        )
+        for m in SmartPowerModel:
+            print(f"{m.value:22s}  (firmware branch: {m.firmware_branch.value})")
         return 0
 
-    if args.branch is None:
-        print("error: --branch is required for this command", file=sys.stderr)
-        return 2
     try:
-        branch = FirmwareBranch.from_name(args.branch)
+        model = _resolve_model_arg(args)
     except SmartPowerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if model is None:
+        print("error: --model is required for this command", file=sys.stderr)
+        return 2
 
     if args.cmd == "list-registers":
-        for reg in sorted(Register.for_branch(branch), key=lambda r: (r.kind.value, r.addr)):
+        for reg in sorted(Register.for_model(model), key=lambda r: (r.kind.value, r.addr)):
             print(f"0x{reg.addr:04X}  {reg.kind.value:14s}  {reg.name}")
         return 0
 
@@ -119,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with SmartPowerClient(
             port=args.port,
             slave_id=args.slave,
-            branch=branch,
+            model=model,
             baudrate=args.baud,
             timeout=args.timeout,
             retries=args.retries,
@@ -139,11 +175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for reg, value in client.dump().items():
                     print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format(value, reg)}")
             elif args.cmd == "probe":
-                candidates = client.probe_branch()
-                print("Detected platform candidates:")
-                for b in candidates:
-                    marker = " <- configured" if b is branch else ""
-                    print(f"  {b.name:22s}  ({b.value}){marker}")
+                candidates = client.probe_model()
+                print("Detected model candidates:")
+                for m in candidates:
+                    marker = " <- configured" if m is model else ""
+                    print(f"  {m.value:22s}  (firmware branch: {m.firmware_branch.value}){marker}")
     except SmartPowerError as exc:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
