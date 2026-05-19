@@ -37,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Public SmartPower model name (SmartPowerSolo, SmartPowerGen_1.0, "
             "SmartPowerGen_1.5, SmartPowerGen_2.0). Required for everything "
-            "except list-models / list-branches."
+            "except list-models."
         ),
     )
     # Deprecated alias retained for back-compat; emits a DeprecationWarning.
@@ -63,8 +63,6 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("probe", help="Identify the model by probing diverging addresses")
     sub.add_parser("list-registers", help="List all registers valid on the selected model")
     sub.add_parser("list-models", help="List all known SmartPower models")
-    # Deprecated alias.
-    sub.add_parser("list-branches", help=argparse.SUPPRESS)
 
     return p
 
@@ -121,14 +119,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     if args.cmd == "list-models":
-        for m in SmartPowerModel:
-            print(f"{m.value:22s}  (firmware branch: {m.firmware_branch.value})")
-        return 0
-    if args.cmd == "list-branches":
-        warnings.warn(
-            "`list-branches` is deprecated; use `list-models`.",
-            DeprecationWarning, stacklevel=2,
-        )
         for m in SmartPowerModel:
             print(f"{m.value:22s}  (firmware branch: {m.firmware_branch.value})")
         return 0

@@ -94,24 +94,6 @@ smartpower-cli list-models
 If the `smartpower-cli` entry point isn't on PATH, use
 `python -m smartpower_modbus.cli ...`.
 
-## Backward compatibility
-
-The following deprecated forms still work — each emits a
-`DeprecationWarning` and resolves to the equivalent public model:
-
-- **`SmartPowerClient(branch=...)`** — pass `model=` instead.
-- **`client.probe_branch()`** — use `client.probe_model()`.
-- **`client.branch`** attribute — use `client.model`.
-- **CLI `--branch`** — use `--model`.
-- **CLI `list-branches`** — use `list-models`.
-- **`SmartPowerModel.from_name("MegaMain")`** and other firmware-branch
-  strings — pass a public model name (e.g. `"SmartPowerGen_2.0"`).
-
-Internally, the `FirmwareBranch` enum is still available for advanced
-inspection (`SmartPowerModel.GEN_2_0.firmware_branch` returns it) but it is
-not part of the public surface — `from smartpower_modbus import …`
-deliberately exports `SmartPowerModel`, not `FirmwareBranch`.
-
 ## Errors
 
 All raised exceptions inherit from `SmartPowerError`:
