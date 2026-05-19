@@ -31,4 +31,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-.doc
+/doc
