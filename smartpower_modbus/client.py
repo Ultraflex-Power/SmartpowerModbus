@@ -37,7 +37,7 @@ class SmartPowerClient:
 
     Use as a context manager::
 
-        with SmartPowerClient("COM5", slave_id=1, branch=FirmwareBranch.MEGA_MAIN) as c:
+        with SmartPowerClient("COM5", slave_id=1, branch=FirmwareBranch.SMARTPOWER_GEN_2_0) as c:
             print(c.read(Register.INPUT_REG_OUT_P))
     """
 
@@ -84,8 +84,8 @@ class SmartPowerClient:
                 self._transport.connect()
                 self._connected = True
                 logger.info(
-                    "Connected to %s slave=%d branch=%s",
-                    self.port, self.slave_id, self.branch.value,
+                    "Connected to %s slave=%d platform=%s (firmware branch %s)",
+                    self.port, self.slave_id, self.branch.name, self.branch.value,
                 )
         return self
 
@@ -220,13 +220,12 @@ class SmartPowerClient:
 
         Reads the address that diverges across the four supported branches
         (``0x2021`` = ``INPUT_REG_THERMO_REG_LIMIT``) and returns the
-        candidate set:
+        candidate platforms:
 
-        - Read succeeds → branches that expose extended thermo regulation
-          (``SngleModule_5540_LF_MF_ExtPA_simple``,
-          ``ProductionPhase1_Fast_1_15_base``).
-        - Slave returns illegal-address → branches that do not
-          (``MegaMain``, ``Gen_1_5_MOD-5537-110_24_outputs_pwm_limit``).
+        - Read succeeds → platforms that expose extended thermo regulation:
+          ``SMARTPOWER_SOLO`` and ``SMARTPOWER_GEN_1_5``.
+        - Slave returns illegal-address → platforms that do not:
+          ``SMARTPOWER_GEN_1_0`` and ``SMARTPOWER_GEN_2_0``.
 
         The branches inside each group are structurally identical at the
         Modbus layer (the only difference is a firmware-side spelling of
@@ -244,17 +243,17 @@ class SmartPowerClient:
 
         if has_ext_thermo:
             candidates = (
-                FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE,
-                FirmwareBranch.PRODUCTION_PHASE_1_FAST_1_15_BASE,
+                FirmwareBranch.SMARTPOWER_SOLO,
+                FirmwareBranch.SMARTPOWER_GEN_1_5,
             )
         else:
             candidates = (
-                FirmwareBranch.MEGA_MAIN,
-                FirmwareBranch.GEN_1_5_MOD_5537_110_24_OUTPUTS_PWM_LIMIT,
+                FirmwareBranch.SMARTPOWER_GEN_1_0,
+                FirmwareBranch.SMARTPOWER_GEN_2_0,
             )
         if self.branch not in candidates:
             logger.warning(
-                "Configured branch %s does not match probe result %s",
-                self.branch.value, [b.value for b in candidates],
+                "Configured platform %s does not match probe result %s",
+                self.branch.name, [b.name for b in candidates],
             )
         return candidates

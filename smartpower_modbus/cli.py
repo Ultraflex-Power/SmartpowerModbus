@@ -1,11 +1,15 @@
 """``smartpower-cli`` — read, write, dump, and probe a SmartPower module.
 
+``--branch`` accepts either the platform identifier (``SMARTPOWER_GEN_2_0``)
+or the firmware-repo branch string (``MegaMain``). Both forms resolve to
+the same target.
+
 Examples::
 
-    smartpower-cli --port COM5 --slave 1 --branch MegaMain read OUT_P OUT_I OUT_V
-    smartpower-cli --port COM5 --slave 1 --branch MegaMain write HOLD_REG_SP_P 50
-    smartpower-cli --port COM5 --slave 1 --branch MegaMain dump
-    smartpower-cli --port COM5 --slave 1 --branch MegaMain probe
+    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 read OUT_P OUT_I OUT_V
+    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 write HOLD_REG_SP_P 50
+    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 dump
+    smartpower-cli --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0 probe
 """
 
 from __future__ import annotations
@@ -27,7 +31,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--slave", type=int, help="Modbus slave ID (1..247). Required for read/write/dump/probe.")
     p.add_argument(
         "--branch",
-        help="Firmware branch name (e.g. MegaMain). Required for everything except list-branches.",
+        help=(
+            "Platform identifier (e.g. SMARTPOWER_GEN_2_0) or firmware branch "
+            "name (e.g. MegaMain). Required for everything except list-branches."
+        ),
     )
     p.add_argument("--baud", type=int, default=DEFAULT_BAUDRATE, help=f"Baud rate (default {DEFAULT_BAUDRATE})")
     p.add_argument("--timeout", type=float, default=1.0, help="Response timeout in seconds")
@@ -84,8 +91,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     if args.cmd == "list-branches":
+        # Show both the platform identifier and the firmware-repo branch
+        # string. Either one is accepted by --branch.
         for b in FirmwareBranch:
-            print(b.value)
+            print(f"{b.name:22s}  {b.value}")
         return 0
 
     if args.branch is None:
@@ -131,10 +140,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format(value, reg)}")
             elif args.cmd == "probe":
                 candidates = client.probe_branch()
-                print("Detected branch candidates:")
+                print("Detected platform candidates:")
                 for b in candidates:
                     marker = " <- configured" if b is branch else ""
-                    print(f"  {b.value}{marker}")
+                    print(f"  {b.name:22s}  ({b.value}){marker}")
     except SmartPowerError as exc:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

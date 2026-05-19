@@ -3,7 +3,10 @@ read a handful of variables, write a setpoint safely, and close.
 
 Run with::
 
-    python example.py --port COM5 --slave 1 --branch MegaMain
+    python example.py --port COM5 --slave 1 --branch SMARTPOWER_GEN_2_0
+
+The ``--branch`` argument accepts either the platform identifier
+(``SMARTPOWER_GEN_2_0``) or the firmware-repo branch string (``MegaMain``).
 """
 
 from __future__ import annotations
@@ -26,8 +29,11 @@ def main() -> int:
     parser.add_argument("--port", required=True, help="Serial port (COM5 / /dev/ttyUSB0)")
     parser.add_argument("--slave", type=int, default=1, help="Modbus slave ID")
     parser.add_argument(
-        "--branch", default="MegaMain",
-        help="Firmware branch (default: MegaMain)",
+        "--branch", default="SMARTPOWER_GEN_2_0",
+        help=(
+            "Platform identifier (e.g. SMARTPOWER_GEN_2_0) or firmware "
+            "branch string (e.g. MegaMain). Default: SMARTPOWER_GEN_2_0."
+        ),
     )
     parser.add_argument("--baud", type=int, default=38400)
     parser.add_argument("--sp-p", type=int, default=None,
@@ -49,11 +55,11 @@ def main() -> int:
             retries=2,
         ) as client:
 
-            # 2) Branch is already configured on the client. Quick probe to
-            #    confirm the device matches what we declared.
-            print(f"Probing branch (configured = {branch.value}) ...")
+            # 2) Platform is already configured on the client. Quick probe
+            #    to confirm the device matches what we declared.
+            print(f"Probing platform (configured = {branch.name} / {branch.value}) ...")
             candidates = client.probe_branch()
-            print(f"  device looks like: {[b.value for b in candidates]}")
+            print(f"  device looks like: {[b.name for b in candidates]}")
 
             # 3) Read several variables. Coils/discretes return bool;
             #    input/holding registers return int (signed if declared so).

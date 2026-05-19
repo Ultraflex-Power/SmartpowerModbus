@@ -31,13 +31,14 @@ from .branches import FirmwareBranch
 from .exceptions import UnsupportedRegisterError
 
 
-B1 = FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE
-B2 = FirmwareBranch.MEGA_MAIN
-B3 = FirmwareBranch.PRODUCTION_PHASE_1_FAST_1_15_BASE
-B4 = FirmwareBranch.GEN_1_5_MOD_5537_110_24_OUTPUTS_PWM_LIMIT
+_SOLO    = FirmwareBranch.SMARTPOWER_SOLO
+_GEN_1_0 = FirmwareBranch.SMARTPOWER_GEN_1_0
+_GEN_1_5 = FirmwareBranch.SMARTPOWER_GEN_1_5
+_GEN_2_0 = FirmwareBranch.SMARTPOWER_GEN_2_0
 
-_ALL = frozenset({B1, B2, B3, B4})
-_WITH_EXT_THERMO = frozenset({B1, B3})
+_ALL = frozenset({_SOLO, _GEN_1_0, _GEN_1_5, _GEN_2_0})
+# Extended thermo regulation registers exist only on SOLO and Gen 1.5.
+_WITH_EXT_THERMO = frozenset({_SOLO, _GEN_1_5})
 
 
 class RegisterKind(Enum):

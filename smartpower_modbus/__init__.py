@@ -4,7 +4,9 @@ Quickstart::
 
     from smartpower_modbus import SmartPowerClient, FirmwareBranch, Register
 
-    with SmartPowerClient("COM5", slave_id=1, branch=FirmwareBranch.MEGA_MAIN) as c:
+    with SmartPowerClient(
+        "COM5", slave_id=1, branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
+    ) as c:
         out_p = c.read(Register.INPUT_REG_OUT_P)
         c.write(Register.HOLD_REG_SP_P, 50)
 """

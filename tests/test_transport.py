@@ -156,7 +156,7 @@ def fake_client():
 def client(fake_client):
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.MEGA_MAIN,
+        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
         timeout=0.01, retries=0,
     )
     # Swap in our fake; bypasses the real serial open in connect().
@@ -298,7 +298,7 @@ def test_retries_on_timeout_but_not_on_illegal_address(fake_client):
 
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.MEGA_MAIN,
+        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
         timeout=0.01, retries=2,
     )
     c._transport._client = fake_client
@@ -349,7 +349,7 @@ def test_dump_skips_illegal_address(client, fake_client):
     # Default factory in FakeSerialClient returns successful empty responses,
     # so we just feed an _ExcResp for every holding read.
     # 25 holding regs in MegaMain (0x3000..0x3017 + 0x3018 reserved):
-    n_hold = sum(1 for r in FirmwareBranch.MEGA_MAIN.registers if r.kind.name == "HOLDING_REG")
+    n_hold = sum(1 for r in FirmwareBranch.SMARTPOWER_GEN_2_0.registers if r.kind.name == "HOLDING_REG")
     fake_client.script("read_holding_registers", *([_ExcResp(0x02)] * n_hold))
     result = client.dump()
     # No holding registers should be present.
@@ -360,17 +360,17 @@ def test_dump_skips_illegal_address(client, fake_client):
 def test_probe_branch_returns_ext_group_when_address_succeeds(client, fake_client):
     fake_client.script("read_input_registers", _Resp(registers=[123]))
     candidates = client.probe_branch()
-    assert FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE in candidates
-    assert FirmwareBranch.PRODUCTION_PHASE_1_FAST_1_15_BASE in candidates
-    assert FirmwareBranch.MEGA_MAIN not in candidates
+    assert FirmwareBranch.SMARTPOWER_SOLO in candidates
+    assert FirmwareBranch.SMARTPOWER_GEN_1_5 in candidates
+    assert FirmwareBranch.SMARTPOWER_GEN_2_0 not in candidates
 
 
 def test_probe_branch_returns_non_ext_group_on_illegal_address(client, fake_client):
     fake_client.script("read_input_registers", _ExcResp(0x02))
     candidates = client.probe_branch()
-    assert FirmwareBranch.MEGA_MAIN in candidates
-    assert FirmwareBranch.GEN_1_5_MOD_5537_110_24_OUTPUTS_PWM_LIMIT in candidates
-    assert FirmwareBranch.SNGLE_MODULE_5540_LF_MF_EXTPA_SIMPLE not in candidates
+    assert FirmwareBranch.SMARTPOWER_GEN_2_0 in candidates
+    assert FirmwareBranch.SMARTPOWER_GEN_1_0 in candidates
+    assert FirmwareBranch.SMARTPOWER_SOLO not in candidates
 
 
 # ---------- Tests: context manager ----------
@@ -378,7 +378,7 @@ def test_probe_branch_returns_non_ext_group_on_illegal_address(client, fake_clie
 def test_context_manager_connects_and_closes(fake_client):
     c = SmartPowerClient(
         port="dummy", slave_id=1,
-        branch=FirmwareBranch.MEGA_MAIN,
+        branch=FirmwareBranch.SMARTPOWER_GEN_2_0,
         timeout=0.01, retries=0,
     )
     c._transport._client = fake_client
