@@ -251,7 +251,11 @@ All raised exceptions inherit from `SmartPowerError`:
 - `InvalidValueError` — value out of range or wrong type
 - `SerialPortError` — could not open or hold the serial port
 - `ModbusCommError` — base for transport-level failures
-  - `ModbusTimeoutError`, `ModbusCrcError` — retried automatically (configurable)
+  - `ModbusTimeoutError`, `ModbusCrcError` — retried automatically on
+    **reads** (up to `retries=` attempts). **Writes** are not retried by
+    default so a torn / duplicate write can't silently bump a setpoint
+    twice; pass `retry_writes=True` to the client if every writable
+    register on your bus is idempotent.
   - `IllegalFunctionError`, `IllegalAddressError`, `IllegalValueError`,
     `SlaveDeviceFailureError` — Modbus exception responses
     0x01 / 0x02 / 0x03 / 0x04, **not** retried
@@ -281,6 +285,20 @@ mapping table do.
 ```powershell
 pip install -e .[test]
 pytest
+```
+
+### Developer checks
+
+CI runs the same commands; reproduce them locally before pushing:
+
+```powershell
+pip install -e .[dev]
+python -m py_compile example.py
+python -m ruff check .
+python -m mypy smartpower_modbus
+python -m pytest -q --cov=smartpower_modbus --cov-report=term-missing
+python -m build                           # sdist + wheel
+python -m twine check --strict dist/*     # packaging metadata
 ```
 
 ## License

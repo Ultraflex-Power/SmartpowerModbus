@@ -139,6 +139,30 @@ def _encode_capacitance(value_F: float) -> tuple[int, int]:
     return (val, exp)
 
 
+def _contiguous_runs(
+    regs: list[Register], max_run: int,
+) -> list[tuple[int, int]]:
+    """Yield ``(start, end)`` slice indices for contiguous-address runs.
+
+    ``regs`` must already be sorted by ``addr``. A run is broken whenever
+    the next register's address is not exactly one past the previous one
+    or when the run would exceed ``max_run`` addresses (Modbus FC03/04
+    cap at 125 words, FC01/02 at 2000 bits per response).
+    """
+    runs: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, len(regs)):
+        prev = regs[i - 1]
+        cur = regs[i]
+        gap = cur.addr != prev.addr + 1
+        too_long = (cur.addr - regs[start].addr + 1) > max_run
+        if gap or too_long:
+            runs.append((start, i))
+            start = i
+    runs.append((start, len(regs)))
+    return runs
+
+
 def _coerce_model(value) -> SmartPowerModel:
     """Accept a SmartPowerModel, a public model name string, a FirmwareBranch
     (deprecated), or a firmware-branch string (deprecated) and return the
@@ -307,6 +331,14 @@ class SmartPowerClient:
         self.close()
 
     # ----- low-level: take raw addresses ----------
+    #
+    # These wrap pymodbus directly and apply no register-level validation:
+    # no kind check, no model check, no signed-int recovery. ``write_coil``
+    # and ``write_coils`` coerce truthy/falsy via ``bool(...)`` — that's a
+    # deliberate caller-responsibility choice for the raw path. The strict
+    # bool-or-0/1 enforcement lives on :meth:`write` / :meth:`write_value`,
+    # which take a :class:`Register` and can refuse a wrong-but-plausible
+    # value (e.g. ``42`` on a coil) before it reaches the wire.
 
     def read_holding(self, addr: int, count: int = 1) -> list[int]:
         with self._lock:
@@ -398,11 +430,68 @@ class SmartPowerClient:
             self._transport.write_holding(reg.addr, unsigned16(value))
 
     def read_many(self, regs: Iterable[Register]) -> dict[Register, int | bool]:
-        """Read several registers individually."""
-        out: dict[Register, int | bool] = {}
-        for reg in regs:
-            out[reg] = self.read(reg)
-        return out
+        """Read several registers, batching contiguous ranges by kind.
+
+        Reduces wire round-trips compared with one ``read()`` per
+        register: registers of the same kind and consecutive addresses
+        are fetched in a single Modbus transaction (FC01/02 for bits,
+        FC03/04 for words), capped at the protocol's per-response limit
+        (2000 bits or 125 words). The returned dict preserves the order
+        in which the registers were first requested.
+
+        Returns the same value types as :meth:`read` — ``bool`` for
+        coils/discrete inputs, ``int`` (signed where the register
+        declares it) for input/holding registers.
+        """
+        # Snapshot the iterable once: callers might pass a generator and
+        # we walk it twice (validation pass + dedup pass).
+        requested = list(regs)
+        model = self._require_model()
+        for reg in requested:
+            assert_supported(reg, model)
+
+        # Dedup but keep first-seen order — duplicates in the request
+        # don't trigger duplicate wire fetches.
+        seen: dict[Register, None] = {}
+        for reg in requested:
+            if reg not in seen:
+                seen[reg] = None
+        unique = list(seen.keys())
+
+        results: dict[Register, int | bool] = {}
+        for kind in RegisterKind:
+            regs_for_kind = [r for r in unique if r.kind is kind]
+            if not regs_for_kind:
+                continue
+            regs_for_kind.sort(key=lambda r: r.addr)
+            # FC03/04 cap at 125 words per response, FC01/02 at 2000 bits.
+            max_run = 2000 if kind in (
+                RegisterKind.COIL, RegisterKind.DISCRETE_INPUT,
+            ) else 125
+            for start, end in _contiguous_runs(regs_for_kind, max_run):
+                run = regs_for_kind[start:end]
+                base_addr = run[0].addr
+                count = run[-1].addr - base_addr + 1
+                values: list[int] | list[bool]
+                with self._lock:
+                    if kind is RegisterKind.COIL:
+                        values = self._transport.read_coils(base_addr, count)
+                    elif kind is RegisterKind.DISCRETE_INPUT:
+                        values = self._transport.read_discretes(base_addr, count)
+                    elif kind is RegisterKind.INPUT_REG:
+                        values = self._transport.read_input(base_addr, count)
+                    else:  # HOLDING_REG
+                        values = self._transport.read_holding(base_addr, count)
+                for reg in run:
+                    raw = values[reg.addr - base_addr]
+                    if kind in (RegisterKind.INPUT_REG, RegisterKind.HOLDING_REG):
+                        assert isinstance(raw, int)
+                        results[reg] = signed16(raw) if reg.signed else raw
+                    else:
+                        results[reg] = bool(raw)
+
+        # Return in original request order (with duplicates collapsed).
+        return {r: results[r] for r in unique}
 
     # ----- interpreted read/write (scaling + temperature units) -----
 

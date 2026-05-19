@@ -121,6 +121,35 @@ def test_from_name_rejects_unknown():
         Register.from_name("BOGUS_NAME")
 
 
+def test_from_name_rejects_ambiguous_suffix_with_helpful_message():
+    # SP_P, ERROR, RESET, … exist as both INPUT_REG_* and HOLD_REG_* —
+    # the old first-match-wins lookup silently picked the input-reg
+    # variant and a `write SP_P` would fail with ReadOnlyRegisterError.
+    # The lookup must now surface the ambiguity explicitly.
+    for ambiguous in ("SP_P", "ERROR", "RESET", "AIN_ASSIGN"):
+        with pytest.raises(UnsupportedRegisterError) as exc_info:
+            Register.from_name(ambiguous)
+        msg = str(exc_info.value)
+        assert "ambiguous" in msg.lower(), msg
+        assert "INPUT_REG_" in msg and "HOLD_REG_" in msg, msg
+
+    # CONFIG collides across DISCRETE_INPUT (INPUT_CONFIG) and COIL
+    # (COIL_CONFIG) — same rule applies, just different prefixes.
+    with pytest.raises(UnsupportedRegisterError) as exc_info:
+        Register.from_name("CONFIG")
+    msg = str(exc_info.value)
+    assert "INPUT_CONFIG" in msg and "COIL_CONFIG" in msg, msg
+
+
+def test_from_name_still_resolves_unambiguous_suffix():
+    # Unique suffixes must keep working — only the colliding ones are
+    # rejected.
+    assert Register.from_name("OUT_P") is Register.INPUT_REG_OUT_P
+    assert Register.from_name("CAP_VAL") is Register.HOLD_REG_CAP_VAL
+    assert Register.from_name("FREQ") is Register.INPUT_REG_FREQ
+    assert Register.from_name("HS_RATIO") is Register.HOLD_REG_HS_RATIO
+
+
 def test_signed_flag_set_on_temperatures():
     for reg in (
         Register.INPUT_REG_IN_COOLANT_T,

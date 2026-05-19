@@ -98,29 +98,8 @@ def test_registers_with_negative_one_sentinel_are_signed():
 
 # ---------- read_value / write_value via the fake transport ----------
 
-from tests.test_transport import (  # noqa: E402  (intentional cross-import)
-    FakeSerialClient,
-    _Resp,
-)
-
-
-@pytest.fixture()
-def fake_client():
-    return FakeSerialClient()
-
-
-@pytest.fixture()
-def client(fake_client):
-    c = SmartPowerClient(
-        port="dummy", slave_id=1,
-        model=SmartPowerModel.GEN_2_0,
-        timeout=0.01, retries=0,
-    )
-    c._transport._client = fake_client
-    c._transport.connect()
-    c._connected = True
-    yield c
-    c.close()
+# Fakes + fixtures come from tests/conftest.py.
+from .conftest import _Resp  # noqa: E402
 
 
 @pytest.fixture()
