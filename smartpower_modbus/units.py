@@ -32,7 +32,7 @@ class TemperatureUnit(Enum):
     FAHRENHEIT = "F"
 
     @classmethod
-    def from_name(cls, name: str) -> "TemperatureUnit":
+    def from_name(cls, name: str) -> TemperatureUnit:
         s = name.strip().upper().lstrip("°")  # strip leading ° if present
         for u in cls:
             if u.value == s or u.name == s:

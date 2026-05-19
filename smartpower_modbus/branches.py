@@ -35,7 +35,7 @@ class FirmwareBranch(Enum):
     MEGA_MAIN                                   = "MegaMain"
 
     @classmethod
-    def from_name(cls, name: str) -> "FirmwareBranch":
+    def from_name(cls, name: str) -> FirmwareBranch:
         """Resolve a branch by its firmware-repo branch string or member name."""
         norm = name.strip().lower()
         for member in cls:
@@ -48,13 +48,13 @@ class FirmwareBranch(Enum):
         )
 
     @cached_property
-    def model(self) -> "SmartPowerModel":
+    def model(self) -> SmartPowerModel:
         """The public ``SmartPowerModel`` that runs this firmware."""
         from .models import _BRANCH_TO_MODEL
         return _BRANCH_TO_MODEL[self]
 
     @cached_property
-    def registers(self) -> "frozenset[Register]":
+    def registers(self) -> frozenset[Register]:
         """Set of every Register exposed by this firmware branch."""
         from .registers import Register
         return frozenset(r for r in Register if self in r.branches)

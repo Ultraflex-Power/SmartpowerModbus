@@ -7,7 +7,6 @@ import pytest
 from smartpower_modbus import Register, SmartPowerClient, SmartPowerModel, TemperatureUnit
 from smartpower_modbus.units import kelvin_from, kelvin_to
 
-
 # ---------- Pure unit math ----------
 
 def test_kelvin_to_self_is_identity():
@@ -101,7 +100,6 @@ def test_registers_with_negative_one_sentinel_are_signed():
 
 from tests.test_transport import (  # noqa: E402  (intentional cross-import)
     FakeSerialClient,
-    _DeviceInfoResp,
     _Resp,
 )
 

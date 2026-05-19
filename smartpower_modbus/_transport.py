@@ -29,6 +29,12 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Pause between retry attempts. Long enough to let a slave that is mid-frame
+# finish (Modbus RTU's inter-frame silence is 3.5 char times ≈ 4 ms at 9600
+# baud, sub-ms at higher rates) without noticeably stretching the worst-case
+# read latency.
+_RETRY_DELAY_SEC = 0.05
+
 
 def _slave_kwarg(method: Any) -> str:
     """Return whichever of ``slave`` / ``device_id`` / ``unit`` this pymodbus
@@ -116,18 +122,20 @@ class _Transport:
         )
 
     def read_coils(self, addr: int, count: int = 1) -> list[bool]:
+        # _call delegates to _extract_result which already trims pymodbus's
+        # whole-byte padding to exactly `count` bits, so no second slice here.
         bits = self._call(
             self._client.read_coils,
             address=addr, count=count, result_attr="bits", retryable=True,
         )
-        return [bool(b) for b in bits[:count]]
+        return [bool(b) for b in bits]
 
     def read_discretes(self, addr: int, count: int = 1) -> list[bool]:
         bits = self._call(
             self._client.read_discrete_inputs,
             address=addr, count=count, result_attr="bits", retryable=True,
         )
-        return [bool(b) for b in bits[:count]]
+        return [bool(b) for b in bits]
 
     # ----- writes -----
 
@@ -198,10 +206,8 @@ class _Transport:
         out: dict[int, str] = {}
         for oid, value in raw_info.items():
             if isinstance(value, (bytes, bytearray)):
-                try:
-                    out[int(oid)] = value.decode("ascii", errors="replace").rstrip("\x00").strip()
-                except Exception:
-                    out[int(oid)] = value.hex()
+                # errors="replace" cannot raise — no fallback needed.
+                out[int(oid)] = value.decode("ascii", errors="replace").rstrip("\x00").strip()
             else:
                 out[int(oid)] = str(value)
         return out
@@ -303,7 +309,7 @@ class _Transport:
                     "%s on attempt %d/%d, retrying: %s",
                     method.__name__, attempt, attempts, last_exc,
                 )
-                time.sleep(0.05)
+                time.sleep(_RETRY_DELAY_SEC)
 
         assert last_exc is not None
         raise last_exc

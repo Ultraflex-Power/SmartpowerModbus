@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import logging
 
-from .client import DEFAULT_BAUDRATE, SmartPowerClient
+# FirmwareBranch is an internal implementation detail; it is importable for
+# the rare case of inspecting which firmware branch underlies a model, but
+# new code should use SmartPowerModel.
+from .branches import FirmwareBranch  # noqa: F401  (kept exportable but not in __all__)
+from .client import DEFAULT_BAUDRATE, SmartPowerClient, interpret_raw
 from .exceptions import (
     IllegalAddressError,
     IllegalFunctionError,
@@ -44,11 +48,6 @@ from .exceptions import (
 from .models import SmartPowerModel
 from .registers import Register, RegisterKind, RegisterMeta, signed16, unsigned16
 from .units import TemperatureUnit
-
-# FirmwareBranch is an internal implementation detail; it is importable for
-# the rare case of inspecting which firmware branch underlies a model, but
-# new code should use SmartPowerModel.
-from .branches import FirmwareBranch  # noqa: F401  (kept exportable but not in __all__)
 
 __all__ = [
     "DEFAULT_BAUDRATE",
@@ -71,6 +70,7 @@ __all__ = [
     "TemperatureUnit",
     "UnsupportedFirmwareBranchError",
     "UnsupportedRegisterError",
+    "interpret_raw",
     "signed16",
     "unsigned16",
 ]

@@ -12,13 +12,24 @@ jobs:
       matrix:
         python:
           - "3.10"
+          - "3.11"
           - "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install package + test extras
-        run: pip install -e .[test]
-      - name: Run pytest
-        run: pytest -q
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install package + dev extras
+        run: pip install -e .[dev]
+      - name: Compile-check example.py
+        # Catches syntax/import regressions in the user-facing example
+        # without needing real hardware.
+        run: python -m py_compile example.py
+      - name: Lint (ruff)
+        run: python -m ruff check .
+      - name: Type-check (mypy)
+        run: python -m mypy smartpower_modbus
+      - name: Run pytest with coverage
+        run: python -m pytest -q --cov=smartpower_modbus --cov-report=term-missing
