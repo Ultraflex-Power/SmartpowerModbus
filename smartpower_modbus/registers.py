@@ -25,11 +25,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
 
 from .branches import FirmwareBranch
 from .exceptions import UnsupportedRegisterError
-
 
 # Firmware-branch shortcuts used in the Register table below. These
 # correspond, via the centralized models.py mapping, to:
@@ -212,7 +210,7 @@ class Register(Enum):
         return self.value.legacy_names
 
     @property
-    def models(self) -> "frozenset":
+    def models(self) -> frozenset:
         """The set of public ``SmartPowerModel`` values that expose this register."""
         from .models import _BRANCH_TO_MODEL
         return frozenset(_BRANCH_TO_MODEL[fb] for fb in self.branches)
@@ -227,7 +225,7 @@ class Register(Enum):
 
     # ---------- Lookup helpers ----------
     @classmethod
-    def from_name(cls, name: str) -> "Register":
+    def from_name(cls, name: str) -> Register:
         """Resolve a register by its canonical name, legacy name, or the
         firmware ``APP_ADDR_*`` constant.
 
@@ -236,28 +234,74 @@ class Register(Enum):
         ``ACIVE_PROFILE`` and the MegaMain rename ``MCB_COOLANT_FLOW``.
         """
         norm = name.strip().upper().removeprefix("APP_ADDR_")
-        for reg in cls:
-            if reg.name == norm:
-                return reg
-            if any(legacy.upper() == norm for legacy in reg.legacy_names):
-                return reg
-            # Also accept the suffix-only form (e.g. "OUT_P" → INPUT_REG_OUT_P)
-            for prefix in ("INPUT_", "COIL_", "INPUT_REG_", "HOLD_REG_"):
-                if reg.name == prefix + norm:
-                    return reg
-        from .exceptions import UnsupportedRegisterError
-        raise UnsupportedRegisterError(f"No register matches name {name!r}")
+        try:
+            return _NAME_INDEX[norm]
+        except KeyError:
+            raise UnsupportedRegisterError(
+                f"No register matches name {name!r}"
+            ) from None
 
     @classmethod
-    def for_branch(cls, branch: FirmwareBranch) -> "frozenset[Register]":
+    def for_branch(cls, branch: FirmwareBranch) -> frozenset[Register]:
         """Registers exposed by a given firmware branch (internal helper)."""
         return frozenset(r for r in cls if branch in r.branches)
 
     @classmethod
-    def for_model(cls, model) -> "frozenset[Register]":
+    def for_model(cls, model) -> frozenset[Register]:
         """Registers exposed by the given ``SmartPowerModel``."""
         fb = model.firmware_branch
         return frozenset(r for r in cls if fb in r.branches)
+
+
+def _build_name_index() -> dict[str, Register]:
+    """Pre-build the name → Register map used by ``Register.from_name``.
+
+    Built once at import; keeps lookup O(1). Two passes so canonical and
+    legacy names always win over the more-ambiguous suffix-only form:
+
+    1. Canonical names + explicit legacy_names: these must be unique. A
+       collision indicates a programmer mistake (two registers claiming
+       the same identifier) and is raised at import time so it can't
+       lurk in production.
+    2. Suffix-only forms (e.g. ``OUT_P`` → ``INPUT_REG_OUT_P``): first
+       match wins, matching the historical linear-scan behaviour. Two
+       registers sharing a suffix (e.g. ``CONFIG`` on both ``INPUT_CONFIG``
+       and ``COIL_CONFIG``) resolve to whichever enum member is declared
+       first — i.e. by ascending address.
+    """
+    index: dict[str, Register] = {}
+
+    # Pass 1: canonical + legacy names — strict.
+    for reg in Register:
+        if reg.name in index and index[reg.name] is not reg:
+            raise RuntimeError(
+                f"Register name collision: {reg.name!r} "
+                f"already mapped to {index[reg.name].name}"
+            )
+        index[reg.name] = reg
+        for legacy in reg.legacy_names:
+            key = legacy.upper()
+            existing = index.get(key)
+            if existing is not None and existing is not reg:
+                raise RuntimeError(
+                    f"Legacy register name collision: {key!r} maps to both "
+                    f"{existing.name} and {reg.name}"
+                )
+            index[key] = reg
+
+    # Pass 2: suffix-only forms — first-match-wins. Skip silently if a
+    # canonical/legacy already owns the key (canonical lookups must not be
+    # shadowed) or if an earlier register already registered the suffix.
+    for reg in Register:
+        for prefix in ("INPUT_", "COIL_", "INPUT_REG_", "HOLD_REG_"):
+            if reg.name.startswith(prefix):
+                suffix = reg.name[len(prefix):]
+                if suffix and suffix not in index:
+                    index[suffix] = reg
+    return index
+
+
+_NAME_INDEX: dict[str, Register] = _build_name_index()
 
 
 def assert_supported(reg: Register, target) -> None:

@@ -18,7 +18,7 @@ code path the library actually owns.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -39,7 +39,6 @@ from smartpower_modbus import (
     UnsupportedRegisterError,
 )
 from smartpower_modbus.branches import FirmwareBranch  # noqa: F401 (used in some tests)
-
 
 # ---------- Pymodbus response/exception fakes ----------
 

@@ -62,7 +62,7 @@ class SmartPowerModel(Enum):
         return _MODEL_TO_PRODUCT_CODE[self]
 
     @classmethod
-    def from_product_code(cls, code: str) -> "SmartPowerModel":
+    def from_product_code(cls, code: str) -> SmartPowerModel:
         """Resolve a model from the raw PRODUCT_CODE string the device
         reports over Modbus FC 0x2B/0x0E.
 
@@ -80,7 +80,7 @@ class SmartPowerModel(Enum):
             ) from None
 
     @classmethod
-    def from_name(cls, name: str) -> "SmartPowerModel":
+    def from_name(cls, name: str) -> SmartPowerModel:
         """Resolve a model from any of:
 
         - canonical public name: ``"SmartPowerGen_2.0"``
@@ -128,7 +128,7 @@ class SmartPowerModel(Enum):
         )
 
     @property
-    def registers(self) -> "frozenset[Register]":
+    def registers(self) -> frozenset[Register]:
         """The set of registers exposed by this model's firmware."""
         return self.firmware_branch.registers
 

@@ -20,9 +20,9 @@ import argparse
 import logging
 import sys
 import warnings
-from typing import Sequence
+from collections.abc import Sequence
 
-from .client import DEFAULT_BAUDRATE, SmartPowerClient, interpret_raw
+from . import DEFAULT_BAUDRATE, SmartPowerClient, interpret_raw
 from .exceptions import SmartPowerError
 from .models import SmartPowerModel
 from .registers import Register, RegisterKind
@@ -105,7 +105,7 @@ def _parse_raw_value(reg: Register, raw: str) -> int | bool:
             return int(raw, 16)
         return int(raw)
     except ValueError as exc:
-        raise SystemExit(f"Cannot interpret {raw!r} as an integer: {exc}")
+        raise SystemExit(f"Cannot interpret {raw!r} as an integer: {exc}") from exc
 
 
 def _parse_interpreted_value(reg: Register, raw: str) -> float | int | bool:
@@ -115,7 +115,7 @@ def _parse_interpreted_value(reg: Register, raw: str) -> float | int | bool:
     try:
         return float(raw)
     except ValueError as exc:
-        raise SystemExit(f"Cannot interpret {raw!r} as a number: {exc}")
+        raise SystemExit(f"Cannot interpret {raw!r} as a number: {exc}") from exc
 
 
 def _format_raw(value: int | bool, reg: Register) -> str:
@@ -231,8 +231,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Product code: {info['product_code']}")
                 print(f"Revision:     {info['revision']}")
                 # ``with`` block already ran connect(), which auto-identifies
-                # when model is None.
-                print(f"Detected:     {client.model.value}")
+                # when model is None. _require_model() narrows the type for
+                # mypy and raises a clear error if (somehow) still unresolved.
+                print(f"Detected:     {client._require_model().value}")
             elif args.cmd == "read":
                 for name in args.names:
                     reg = Register.from_name(name)

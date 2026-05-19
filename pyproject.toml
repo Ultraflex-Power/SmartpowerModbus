@@ -24,7 +24,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pytest-cov"]
+dev = ["pytest>=7", "pytest-cov", "ruff", "mypy"]
 
 [project.scripts]
 smartpower-cli = "smartpower_modbus.cli:main"
@@ -38,3 +39,36 @@ smartpower_modbus = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+# Curated set: pycodestyle, pyflakes, isort, pyupgrade, bugbear, simplify.
+# Keep narrow on purpose — the codebase isn't autoformatted, so noisy rules
+# would produce churn without obvious wins.
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# E501 line-too-long is intentional for docstrings + log messages; rely on
+# the soft 100-char target instead of a hard wrap.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can use bare `assert`, longer functions, etc.
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["smartpower_modbus"]
+# Gradual typing: turn the strict knobs on as the codebase converges.
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# pymodbus is untyped in the versions we pin; don't crash mypy over it.
+module = ["pymodbus.*"]
+ignore_missing_imports = true

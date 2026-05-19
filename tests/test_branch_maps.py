@@ -26,7 +26,6 @@ from smartpower_modbus.registers import (
     unsigned16,
 )
 
-
 SOLO    = SmartPowerModel.SOLO
 GEN_1_0 = SmartPowerModel.GEN_1_0
 GEN_1_5 = SmartPowerModel.GEN_1_5

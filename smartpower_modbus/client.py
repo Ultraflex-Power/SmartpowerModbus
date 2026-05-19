@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import threading
 import warnings
-from typing import Iterable
+from collections.abc import Iterable
 
+from ._transport import _Transport
 from .branches import FirmwareBranch
 from .exceptions import (
     IllegalAddressError,
@@ -29,7 +30,6 @@ from .units import (
     kelvin_from,
     kelvin_to,
 )
-from ._transport import _Transport
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,37 @@ def interpret_raw(
     if is_temperature_unit(reg.unit):
         return kelvin_to(value, temperature_unit)
     return value
+
+
+def _validate_int16(reg: Register, raw: int, *, physical_value=None) -> None:
+    """Range-check ``raw`` against ``reg``'s declared signedness.
+
+    When ``physical_value`` is provided (interpreted-write path) the error
+    message also mentions the original physical input and the register's
+    scale/unit — otherwise it stays terse (direct-write path).
+    """
+    if reg.signed:
+        if not -0x8000 <= raw <= 0x7FFF:
+            if physical_value is None:
+                raise InvalidValueError(
+                    f"{reg.name} is int16 — value {raw} out of range "
+                    f"[-32768, 32767]"
+                )
+            raise InvalidValueError(
+                f"Value {physical_value} (raw {raw}) out of range for {reg.name} "
+                f"(int16, scale={reg.scale}, unit={reg.unit or 'raw'})"
+            )
+    else:
+        if not 0 <= raw <= 0xFFFF:
+            if physical_value is None:
+                raise InvalidValueError(
+                    f"{reg.name} is uint16 — value {raw} out of range "
+                    f"[0, 65535]"
+                )
+            raise InvalidValueError(
+                f"Value {physical_value} (raw {raw}) out of range for {reg.name} "
+                f"(uint16, scale={reg.scale}, unit={reg.unit or 'raw'})"
+            )
 
 
 def _coerce_model(value) -> SmartPowerModel:
@@ -185,7 +216,7 @@ class SmartPowerClient:
 
     # ----- lifecycle -----
 
-    def connect(self) -> "SmartPowerClient":
+    def connect(self) -> SmartPowerClient:
         with self._lock:
             if not self._connected:
                 self._transport.connect()
@@ -211,7 +242,7 @@ class SmartPowerClient:
                 raise
         logger.info(
             "Connected to %s slave=%d model=%s",
-            self.port, self.slave_id, self.model.value,
+            self.port, self.slave_id, self._require_model().value,
         )
         return self
 
@@ -222,7 +253,7 @@ class SmartPowerClient:
                 self._connected = False
                 logger.info("Closed connection to %s", self.port)
 
-    def __enter__(self) -> "SmartPowerClient":
+    def __enter__(self) -> SmartPowerClient:
         return self.connect()
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -315,18 +346,7 @@ class SmartPowerClient:
         # unsigned16() accepts the whole [-32768, 65535] range — which
         # silently turns a stray -1 on an unsigned register into 0xFFFF.
         # Validate first so the caller sees a meaningful error.
-        if reg.signed:
-            if not -0x8000 <= value <= 0x7FFF:
-                raise InvalidValueError(
-                    f"{reg.name} is int16 — value {value} out of range "
-                    f"[-32768, 32767]"
-                )
-        else:
-            if not 0 <= value <= 0xFFFF:
-                raise InvalidValueError(
-                    f"{reg.name} is uint16 — value {value} out of range "
-                    f"[0, 65535]"
-                )
+        _validate_int16(reg, value)
         with self._lock:
             self._transport.write_holding(reg.addr, unsigned16(value))
 
@@ -387,6 +407,13 @@ class SmartPowerClient:
               no unit), ``value`` is the raw int.
         """
         if reg.kind is RegisterKind.COIL:
+            # Narrow off float here so the call to write() type-checks; the
+            # strict bool/int validation happens inside write() itself.
+            if not isinstance(value, (bool, int)):
+                raise InvalidValueError(
+                    f"Coil {reg.name} accepts bool or int 0/1, got "
+                    f"{type(value).__name__} {value!r}"
+                )
             self.write(reg, value)
             return
 
@@ -415,18 +442,7 @@ class SmartPowerClient:
 
         # Range-check before delegating to write() so the user gets a
         # meaningful error message that mentions the physical value.
-        if reg.signed:
-            if not -0x8000 <= raw <= 0x7FFF:
-                raise InvalidValueError(
-                    f"Value {value} (raw {raw}) out of range for {reg.name} "
-                    f"(int16, scale={reg.scale}, unit={reg.unit or 'raw'})"
-                )
-        else:
-            if not 0 <= raw <= 0xFFFF:
-                raise InvalidValueError(
-                    f"Value {value} (raw {raw}) out of range for {reg.name} "
-                    f"(uint16, scale={reg.scale}, unit={reg.unit or 'raw'})"
-                )
+        _validate_int16(reg, raw, physical_value=value)
 
         self.write(reg, raw)
 
