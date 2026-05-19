@@ -353,12 +353,21 @@ class SmartPowerClient:
     def read_product_code(self) -> str:
         """Read just the PRODUCT_CODE string the device reports.
 
-        Issues FC 0x2B / 0x0E with ``read_code=0x04`` (specific object) and
-        ``object_id=1`` — a single-object request, the cheapest way to
-        identify a device.
+        Issues FC 0x2B / 0x0E with ``read_code=0x01`` (basic conformity)
+        and ``object_id=1`` (start at PRODUCT_CODE).
+
+        Why basic and not specific (0x04)? The SmartPower firmware ships
+        with the ``MEI_DEV_ONE_OBJ_ENA`` macro **disabled** (commented out
+        in ``ModBus_Slave.cpp``), which means the slave only honours
+        ``read_code == 0x01`` and replies to anything else with Modbus
+        exception 0x02. The basic-conformity handler is fall-through:
+        passing ``object_id=1`` makes it emit PRODUCT_CODE and REVISION
+        (skipping vendor), which is the cheapest combination that gets
+        us the product code while remaining compatible with every
+        SmartPower firmware build.
         """
         with self._lock:
-            raw = self._transport.read_device_information(read_code=0x04, object_id=1)
+            raw = self._transport.read_device_information(read_code=0x01, object_id=1)
         code = raw.get(1)
         if code is None or code == "":
             raise SmartPowerError(

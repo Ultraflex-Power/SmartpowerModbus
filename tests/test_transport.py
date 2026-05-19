@@ -467,13 +467,20 @@ def test_read_device_info_returns_three_named_fields(client, fake_client):
     assert call.kwargs["slave"] == 1
 
 
-def test_read_product_code_uses_specific_object_request(client, fake_client):
-    fake_client.script("read_device_information", _DeviceInfoResp({1: b"55370112"}))
+def test_read_product_code_uses_basic_conformity_request(client, fake_client):
+    """SmartPower firmware ships with MEI_DEV_ONE_OBJ_ENA disabled, so
+    the slave rejects read_code=0x04 with Modbus exception 0x02.
+    ``read_product_code()`` must use read_code=0x01 (basic), starting at
+    object_id=1 (PRODUCT_CODE) so the fall-through returns at least the
+    product code."""
+    fake_client.script(
+        "read_device_information",
+        _DeviceInfoResp({1: b"55370112", 2: b"1.0.0"}),
+    )
     code = client.read_product_code()
     assert code == "55370112"
     call = fake_client.calls[-1]
-    # read_code=0x04 (specific object) with object_id=1 (product code).
-    assert call.kwargs["read_code"] == 0x04
+    assert call.kwargs["read_code"] == 0x01  # basic, not 0x04
     assert call.kwargs["object_id"] == 1
 
 
