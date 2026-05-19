@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import warnings
 from collections.abc import Iterable
@@ -90,6 +91,52 @@ def _validate_int16(reg: Register, raw: int, *, physical_value=None) -> None:
                 f"Value {physical_value} (raw {raw}) out of range for {reg.name} "
                 f"(uint16, scale={reg.scale}, unit={reg.unit or 'raw'})"
             )
+
+
+# Plausibility window for the tank-capacitor exponent. Real capacitors run
+# from picofarad to ~Farad scale; clamping past that catches uninitialised
+# memory / wrong-register reads while leaving plenty of headroom on either
+# side. Used by both the read decoder (``_read_cap_pair``) and the write
+# encoder (``_encode_capacitance``).
+_CAP_EXP_MIN = -30
+_CAP_EXP_MAX = 6
+
+
+def _encode_capacitance(value_F: float) -> tuple[int, int]:
+    """Encode a capacitance in Farads as a (val, exp) pair for the firmware's
+    two-register storage: ``cap_F == val * 10**exp``, with ``val`` in
+    ``[0, 65535]`` (uint16) and ``exp`` in ``[_CAP_EXP_MIN, _CAP_EXP_MAX]``.
+
+    Chooses ``exp`` so that ``val`` lands in ``[6554, 65535]`` whenever
+    possible — that maximises uint16 precision so a round-trip through
+    :func:`_read_cap_pair` preserves the input to ~4 decimal digits.
+
+    Raises :class:`InvalidValueError` for negative, ``nan``, ``inf``, or
+    values that cannot be represented within the exponent window.
+    """
+    if not isinstance(value_F, (int, float)) or isinstance(value_F, bool):
+        raise InvalidValueError(
+            f"Capacitance must be a real number, got {type(value_F).__name__} {value_F!r}"
+        )
+    if not math.isfinite(value_F) or value_F < 0:
+        raise InvalidValueError(
+            f"Capacitance must be a non-negative finite number, got {value_F!r}"
+        )
+    if value_F == 0.0:
+        return (0, 0)
+    # exp = ceil(log10(value / uint16_max)) puts ``val`` in [6554, 65535]
+    # except when rounding pushes val to 65536 — caught below.
+    exp = math.ceil(math.log10(value_F / 0xFFFF))
+    val = round(value_F / (10.0 ** exp))
+    if val > 0xFFFF:
+        exp += 1
+        val = round(value_F / (10.0 ** exp))
+    if not _CAP_EXP_MIN <= exp <= _CAP_EXP_MAX:
+        raise InvalidValueError(
+            f"Capacitance {value_F} F cannot be encoded with exponent in "
+            f"[{_CAP_EXP_MIN}, {_CAP_EXP_MAX}] (got exp={exp})"
+        )
+    return (val, exp)
 
 
 def _coerce_model(value) -> SmartPowerModel:
@@ -448,6 +495,51 @@ class SmartPowerClient:
 
     # ----- composite: tank-capacitor value+exponent -----
 
+    def _read_cap_pair(self, val_reg: Register, exp_reg: Register) -> float:
+        """Atomic value+exponent read shared by ``read_capacitance`` and
+        ``read_second_capacitance``. Reads ``val_reg`` and ``exp_reg`` in
+        one Modbus transaction (they live at adjacent addresses), decodes
+        the exponent as int16, and bounds-checks it.
+        """
+        model = self._require_model()
+        assert_supported(val_reg, model)
+        assert_supported(exp_reg, model)
+        # val_reg and exp_reg are firmware-side adjacent (val first); enforce
+        # so a refactor can't quietly desynchronise the pair.
+        assert exp_reg.addr == val_reg.addr + 1, (
+            f"{val_reg.name} and {exp_reg.name} must be at adjacent addresses"
+        )
+        with self._lock:
+            raw = self._transport.read_holding(val_reg.addr, 2)
+        val_raw = raw[0]
+        exp_raw = signed16(raw[1])
+        if not _CAP_EXP_MIN <= exp_raw <= _CAP_EXP_MAX:
+            raise InvalidValueError(
+                f"Capacitance exponent {exp_raw} from {exp_reg.name} "
+                f"is out of plausible range [{_CAP_EXP_MIN}, {_CAP_EXP_MAX}]"
+            )
+        return val_raw * (10.0 ** exp_raw)
+
+    def _write_cap_pair(
+        self, val_reg: Register, exp_reg: Register, value: float
+    ) -> None:
+        """Encode ``value`` (Farads) and write the val+exp pair atomically
+        via FC 0x10 (Write Multiple Registers). Shared by
+        ``write_capacitance`` and ``write_second_capacitance``.
+        """
+        model = self._require_model()
+        assert_supported(val_reg, model)
+        assert_supported(exp_reg, model)
+        assert exp_reg.addr == val_reg.addr + 1, (
+            f"{val_reg.name} and {exp_reg.name} must be at adjacent addresses"
+        )
+        val, exp = _encode_capacitance(float(value))
+        # ``exp`` is a signed int16 on the wire — convert to the uint16
+        # wire form. unsigned16() also validates the range as a sanity guard.
+        exp_wire = unsigned16(exp)
+        with self._lock:
+            self._transport.write_holdings(val_reg.addr, [val, exp_wire])
+
     def read_capacitance(self) -> float:
         """Read the equal-tank-capacitor value as a single float in Farads.
 
@@ -462,22 +554,49 @@ class SmartPowerClient:
         exponent against a sane range — a garbage firmware value of e.g.
         ``exp=400`` would silently overflow ``10.0 ** exp`` to ``inf``.
         """
-        model = self._require_model()
-        assert_supported(Register.HOLD_REG_CAP_VAL, model)
-        assert_supported(Register.HOLD_REG_CAP_EXP, model)
-        with self._lock:
-            raw = self._transport.read_holding(Register.HOLD_REG_CAP_VAL.addr, 2)
-        val_raw = raw[0]
-        exp_raw = signed16(raw[1])
-        # Real-world tank caps land in pico- to milli-farad territory; clamp
-        # well past that so legitimate firmware values pass while obvious
-        # garbage (uninitialised memory, wrong register) is rejected.
-        if not -30 <= exp_raw <= 6:
-            raise InvalidValueError(
-                f"Capacitance exponent {exp_raw} from {Register.HOLD_REG_CAP_EXP.name} "
-                f"is out of plausible range [-30, 6]"
-            )
-        return val_raw * (10.0 ** exp_raw)
+        return self._read_cap_pair(
+            Register.HOLD_REG_CAP_VAL, Register.HOLD_REG_CAP_EXP,
+        )
+
+    def read_second_capacitance(self) -> float:
+        """Read the second equal-tank-capacitor value as a single float in Farads.
+
+        Mirror of :meth:`read_capacitance` against the second value/exponent
+        pair at ``HOLD_REG_SECOND_CAP_VAL`` (``0x3012``) and
+        ``HOLD_REG_SECOND_CAP_EXP`` (``0x3013``). Same atomicity and
+        bounds-check semantics.
+        """
+        return self._read_cap_pair(
+            Register.HOLD_REG_SECOND_CAP_VAL, Register.HOLD_REG_SECOND_CAP_EXP,
+        )
+
+    def write_capacitance(self, value: float) -> None:
+        """Write the equal-tank-capacitor value as a single float in Farads.
+
+        Inverse of :meth:`read_capacitance`. Encodes ``value`` as a (val,
+        exp) pair and writes both registers atomically via FC 0x10. The
+        encoder maximises uint16 precision (mantissa lands in
+        ``[6554, 65535]`` whenever possible) so a round-trip through
+        :meth:`read_capacitance` preserves ``value`` to ~4 decimal digits.
+
+        Raises :class:`InvalidValueError` for negative, ``nan``/``inf``,
+        or out-of-range inputs (exponent outside ``[-30, 6]``).
+        """
+        self._write_cap_pair(
+            Register.HOLD_REG_CAP_VAL, Register.HOLD_REG_CAP_EXP, value,
+        )
+
+    def write_second_capacitance(self, value: float) -> None:
+        """Write the second equal-tank-capacitor value as a single float in Farads.
+
+        Mirror of :meth:`write_capacitance` against the second value/exponent
+        pair (``HOLD_REG_SECOND_CAP_VAL`` / ``HOLD_REG_SECOND_CAP_EXP``).
+        """
+        self._write_cap_pair(
+            Register.HOLD_REG_SECOND_CAP_VAL,
+            Register.HOLD_REG_SECOND_CAP_EXP,
+            value,
+        )
 
     def dump(self) -> dict[Register, int | bool]:
         """Read every register exposed by the configured model.
