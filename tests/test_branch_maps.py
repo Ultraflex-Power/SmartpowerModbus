@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from smartpower_modbus import (
+    InvalidValueError,
     Register,
     RegisterKind,
     SmartPowerModel,
@@ -160,9 +161,9 @@ def test_signed16_round_trip():
     assert unsigned16(-32768) == 0x8000
     assert unsigned16(32767) == 0x7FFF
     assert unsigned16(0xFFFF) == 0xFFFF
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidValueError):
         unsigned16(70000)
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidValueError):
         unsigned16(-50000)
 
 

@@ -297,14 +297,13 @@ def test_read_capacitance_combines_val_and_exp(client, fake_client):
     """CAP_VAL=1234, CAP_EXP=-9 → 1234 nF = 1.234e-6 F.
 
     Formula per spec rev A7: ``Cap = VAL * 10^EXP`` (no /100 divisor that
-    A6 wrongly listed).
+    A6 wrongly listed). Both registers are read in a single transaction
+    so a concurrent writer cannot tear the value/exponent pair.
     """
-    # First read CAP_VAL (holding), then CAP_EXP. Both are holding registers
-    # so they share the read_holding_registers script queue.
     fake_client.script(
         "read_holding_registers",
-        _Resp(registers=[1234]),   # CAP_VAL
-        _Resp(registers=[0xFFF7]), # CAP_EXP = -9 as int16
+        # registers[0]=CAP_VAL=1234, registers[1]=CAP_EXP=-9 (0xFFF7 as int16).
+        _Resp(registers=[1234, 0xFFF7]),
     )
     cap = client.read_capacitance()
     # 1234 * 10^-9 = 1.234e-6 F

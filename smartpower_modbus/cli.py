@@ -136,10 +136,13 @@ def _format_interpreted(value, reg: Register, temp_unit: TemperatureUnit) -> str
         if isinstance(value, float):
             return f"{value:g} {reg.unit}"
         return f"{value} {reg.unit}"
-    # No unit declared — print the raw int.
+    # No unit declared — print the value plainly. The raw-hex companion
+    # belongs on the non-interpret path (``_format_raw``); showing it here
+    # for a signed register would print ``-1 (0xFFFF)`` and mislead the
+    # reader about which form is the "real" value.
     if isinstance(value, float):
         return f"{value:g}"
-    return f"{value} (0x{value & 0xFFFF:04X})"
+    return f"{value}"
 
 
 def _resolve_model_arg(args) -> SmartPowerModel | None:

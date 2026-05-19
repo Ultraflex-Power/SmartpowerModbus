@@ -286,12 +286,21 @@ class SmartPowerClient:
                 f"{reg.name} is a {reg.kind.value}; not writable."
             )
         if reg.kind is RegisterKind.COIL:
-            if not isinstance(value, (bool, int)):
+            # Accept bool, or int 0/1 (legacy ergonomics). Reject everything
+            # else — silently coercing e.g. ``42`` to ``True`` would let a
+            # caller addressing the wrong register get a wrong-but-plausible
+            # write rather than a clear error.
+            if isinstance(value, bool):
+                bit = value
+            elif isinstance(value, int) and value in (0, 1):
+                bit = bool(value)
+            else:
                 raise InvalidValueError(
-                    f"Coil {reg.name} accepts bool, got {type(value).__name__}"
+                    f"Coil {reg.name} accepts bool or int 0/1, got "
+                    f"{type(value).__name__} {value!r}"
                 )
             with self._lock:
-                self._transport.write_coil(reg.addr, bool(value))
+                self._transport.write_coil(reg.addr, bit)
             return
         # HOLDING_REG
         if isinstance(value, bool):
@@ -431,9 +440,27 @@ class SmartPowerClient:
         (``0x3009``); the physical value is ``VAL * 10^EXP`` F (spec
         rev A7 — earlier revisions of the spec wrongly listed
         ``VAL/100 * 10^EXP``).
+
+        Reads both registers in one Modbus transaction so a concurrent
+        writer cannot tear the value/exponent pair, and validates the
+        exponent against a sane range — a garbage firmware value of e.g.
+        ``exp=400`` would silently overflow ``10.0 ** exp`` to ``inf``.
         """
-        val_raw = self.read(Register.HOLD_REG_CAP_VAL)
-        exp_raw = self.read(Register.HOLD_REG_CAP_EXP)
+        model = self._require_model()
+        assert_supported(Register.HOLD_REG_CAP_VAL, model)
+        assert_supported(Register.HOLD_REG_CAP_EXP, model)
+        with self._lock:
+            raw = self._transport.read_holding(Register.HOLD_REG_CAP_VAL.addr, 2)
+        val_raw = raw[0]
+        exp_raw = signed16(raw[1])
+        # Real-world tank caps land in pico- to milli-farad territory; clamp
+        # well past that so legitimate firmware values pass while obvious
+        # garbage (uninitialised memory, wrong register) is rejected.
+        if not -30 <= exp_raw <= 6:
+            raise InvalidValueError(
+                f"Capacitance exponent {exp_raw} from {Register.HOLD_REG_CAP_EXP.name} "
+                f"is out of plausible range [-30, 6]"
+            )
         return val_raw * (10.0 ** exp_raw)
 
     def dump(self) -> dict[Register, int | bool]:
@@ -582,13 +609,17 @@ class SmartPowerClient:
                 f"match any known SmartPower model. {exc}"
             ) from exc
 
-        if self.model is not None and self.model is not model:
-            logger.warning(
-                "Configured model %s disagrees with device-reported model %s "
-                "(PRODUCT_CODE %r) — keeping configured value",
-                self.model.value, model.value, code,
-            )
-        else:
-            self.model = model
-            logger.info("Identified model: %s (PRODUCT_CODE %r)", model.value, code)
+        # Compare-and-set under the lock so a concurrent caller cannot
+        # observe a half-resolved state. CPython's GIL makes each access
+        # atomic, but the read-decide-write triplet is not.
+        with self._lock:
+            if self.model is not None and self.model is not model:
+                logger.warning(
+                    "Configured model %s disagrees with device-reported model %s "
+                    "(PRODUCT_CODE %r) — keeping configured value",
+                    self.model.value, model.value, code,
+                )
+            else:
+                self.model = model
+                logger.info("Identified model: %s (PRODUCT_CODE %r)", model.value, code)
         return model
