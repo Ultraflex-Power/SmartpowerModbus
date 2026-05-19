@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartpower-modbus"
+version = "0.1.0"
+description = "Modbus RTU client for SmartPower (MOD-537-250) control boards"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Ultraflex Power" }]
+dependencies = [
+    "pymodbus>=3.7,<4",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+smartpower-cli = "smartpower_modbus.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["smartpower_modbus*"]
+
+[tool.setuptools.package-data]
+smartpower_modbus = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
