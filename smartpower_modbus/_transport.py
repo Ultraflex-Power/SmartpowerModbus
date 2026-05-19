@@ -58,6 +58,7 @@ class _Transport:
         timeout: float,
         slave_id: int,
         retries: int,
+        retry_writes: bool = False,
     ) -> None:
         # Imported lazily so a missing pymodbus surfaces only when a transport
         # is actually constructed (not at package import time).
@@ -73,6 +74,12 @@ class _Transport:
         )
         self._slave_id = slave_id
         self._retries = max(0, int(retries))
+        # Modbus best practice: writes are NOT retried by default. After a
+        # write timeout the slave may have processed the request and only
+        # the response was lost — retrying would double-write. Enable
+        # retry_writes=True only when every writable register is idempotent
+        # for the application.
+        self._retry_writes = bool(retry_writes)
 
     # ----- lifecycle -----
 
@@ -127,27 +134,29 @@ class _Transport:
     def write_holding(self, addr: int, value: int) -> None:
         self._call(
             self._client.write_register,
-            address=addr, value=value & 0xFFFF, result_attr=None, retryable=True,
+            address=addr, value=value & 0xFFFF, result_attr=None,
+            retryable=self._retry_writes,
         )
 
     def write_holdings(self, addr: int, values: list[int]) -> None:
         self._call(
             self._client.write_registers,
             address=addr, values=[v & 0xFFFF for v in values],
-            result_attr=None, retryable=True,
+            result_attr=None, retryable=self._retry_writes,
         )
 
     def write_coil(self, addr: int, value: bool) -> None:
         self._call(
             self._client.write_coil,
-            address=addr, value=bool(value), result_attr=None, retryable=True,
+            address=addr, value=bool(value), result_attr=None,
+            retryable=self._retry_writes,
         )
 
     def write_coils(self, addr: int, values: list[bool]) -> None:
         self._call(
             self._client.write_coils,
             address=addr, values=[bool(v) for v in values],
-            result_attr=None, retryable=True,
+            result_attr=None, retryable=self._retry_writes,
         )
 
     # ----- Modbus FC 0x2B/0x0E: Read Device Identification -----
@@ -168,26 +177,18 @@ class _Transport:
         - 0: vendor name (``"Ultraflex Power"``)
         - 1: product code (``"55370112"`` etc.)
         - 2: revision (firmware version string)
-        """
-        from pymodbus.exceptions import ConnectionException, ModbusIOException
-        try:
-            response = self._client.read_device_information(
-                read_code=read_code,
-                object_id=object_id,
-                slave=self._slave_id,
-            )
-        except ConnectionException as exc:
-            raise SerialPortError(f"Serial connection lost: {exc}") from exc
-        except ModbusIOException as exc:
-            raise self._translate_io_error(exc) from exc
 
-        if response is None:
-            raise ModbusCommError("No response to Read Device Identification")
-        exc_code = getattr(response, "exception_code", None)
-        if exc_code is not None:
-            self._raise_exception_response(response)
-        if response.isError():
-            raise self._translate_io_error(response)
+        Routed through the same kwarg-normalisation and retry path as
+        the regular FC reads, so this method tolerates pymodbus's
+        ``slave=`` / ``device_id=`` / ``unit=`` drift and recovers from
+        transient comm errors.
+        """
+        # MEI is a read — same retry policy as other reads.
+        response = self._call_kwargs_only(
+            self._client.read_device_information,
+            kwargs={"read_code": read_code, "object_id": object_id},
+            retryable=True,
+        )
 
         raw_info = getattr(response, "information", None)
         if raw_info is None:
@@ -218,26 +219,63 @@ class _Transport:
         value: Any = None,
         values: Any = None,
     ) -> Any:
-        from pymodbus.exceptions import ConnectionException, ModbusIOException
-
-        slave_kw = _slave_kwarg(method)
-        kwargs: dict[str, Any] = {slave_kw: self._slave_id}
+        kwargs: dict[str, Any] = {}
         if count is not None:
             kwargs["count"] = count
         if value is not None:
             kwargs["value"] = value
         if values is not None:
             kwargs["values"] = values
+        response = self._invoke(
+            method, args=(address,), kwargs=kwargs, retryable=retryable,
+        )
+        if result_attr is None:
+            return None
+        return self._extract_result(response, result_attr, count, method)
+
+    def _call_kwargs_only(
+        self,
+        method: Any,
+        *,
+        kwargs: dict[str, Any],
+        retryable: bool,
+    ) -> Any:
+        """Variant of ``_call`` for pymodbus methods that don't take a
+        positional ``address`` (e.g. MEI ``read_device_information``).
+
+        Goes through the same kwarg-normalisation, error translation, and
+        retry loop, and returns the raw response object — the caller
+        extracts whatever payload it needs.
+        """
+        return self._invoke(method, args=(), kwargs=dict(kwargs), retryable=retryable)
+
+    def _invoke(
+        self,
+        method: Any,
+        *,
+        args: tuple,
+        kwargs: dict[str, Any],
+        retryable: bool,
+    ) -> Any:
+        """Shared retry / error-translation core. Adds the slave-id kwarg
+        under whichever name the bound pymodbus method accepts, runs the
+        call, retries transient comm errors up to ``self._retries`` times,
+        and translates any Modbus exception response to the correct
+        library exception."""
+        from pymodbus.exceptions import ConnectionException, ModbusIOException
+
+        slave_kw = _slave_kwarg(method)
+        kwargs = {**kwargs, slave_kw: self._slave_id}
 
         attempts = self._retries + 1 if retryable else 1
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
                 logger.debug(
-                    "TX %s addr=0x%04X kwargs=%s (attempt %d/%d)",
-                    method.__name__, address, kwargs, attempt, attempts,
+                    "TX %s args=%r kwargs=%s (attempt %d/%d)",
+                    method.__name__, args, kwargs, attempt, attempts,
                 )
-                response = method(address, **kwargs)
+                response = method(*args, **kwargs)
             except ConnectionException as exc:
                 raise SerialPortError(f"Serial connection lost: {exc}") from exc
             except ModbusIOException as exc:
@@ -258,11 +296,8 @@ class _Transport:
                 if response is None or response.isError():
                     last_exc = self._translate_io_error(response)
                 else:
-                    if result_attr is None:
-                        return None
-                    return getattr(response, result_attr)
+                    return response
 
-            # If we got here, we have a retryable error in last_exc.
             if attempt < attempts:
                 logger.warning(
                     "%s on attempt %d/%d, retrying: %s",
@@ -272,6 +307,40 @@ class _Transport:
 
         assert last_exc is not None
         raise last_exc
+
+    @staticmethod
+    def _extract_result(response: Any, result_attr: str, count: int | None, method: Any) -> Any:
+        """Pull ``result_attr`` off a successful response, validating that
+        the payload looks well-formed. A pymodbus response that claims
+        success but lacks the expected attribute (or returns a too-short
+        list) is treated as a transport-level error rather than letting
+        the caller meet an opaque ``AttributeError`` / ``IndexError``
+        downstream."""
+        if not hasattr(response, result_attr):
+            raise ModbusCommError(
+                f"{method.__name__} response missing '{result_attr}' field"
+            )
+        payload = getattr(response, result_attr)
+        if payload is None:
+            raise ModbusCommError(
+                f"{method.__name__} returned '{result_attr}=None'"
+            )
+        if not isinstance(payload, (list, tuple)):
+            raise ModbusCommError(
+                f"{method.__name__} returned '{result_attr}' of type "
+                f"{type(payload).__name__}, expected list/tuple"
+            )
+        if count is not None and len(payload) < count:
+            raise ModbusCommError(
+                f"{method.__name__} returned only {len(payload)} of "
+                f"{count} requested elements in '{result_attr}'"
+            )
+        # Defensive truncation matches the existing read_coils[bits:count]
+        # pattern — pymodbus's coil reads pad to a whole byte, so a
+        # caller asking for 3 coils gets exactly 3 booleans.
+        if count is not None:
+            payload = list(payload)[:count]
+        return payload
 
     @staticmethod
     def _translate_io_error(exc: Any) -> ModbusCommError:

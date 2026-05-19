@@ -309,3 +309,40 @@ def test_read_capacitance_combines_val_and_exp(client, fake_client):
     cap = client.read_capacitance()
     # 1234 * 10^-9 = 1.234e-6 F
     assert cap == pytest.approx(1.234e-6, rel=1e-6)
+
+
+# ---------- Tests: code-review Bug 4 regression coverage ----------
+
+def test_write_value_rejects_bool_for_holding_register(client):
+    """Bug 4a: passing True/False to write_value for a non-coil register
+    must raise rather than silently coerce to 1/0."""
+    from smartpower_modbus import InvalidValueError
+    with pytest.raises(InvalidValueError, match="bool"):
+        client.write_value(Register.HOLD_REG_SP_P, True)
+    with pytest.raises(InvalidValueError, match="bool"):
+        client.write_value(Register.HOLD_REG_SP_P, False)
+
+
+def test_write_value_rounds_unscaled_float(client, fake_client):
+    """Bug 4b: for scale==1.0 non-temperature registers, write_value
+    must round (not truncate) the input float — consistent with the
+    scale!=1.0 branch."""
+    # PA_MAX_WORK_SET is a counter with scale=1.0 and no temperature unit.
+    # Writing 1.7 should round to 2, not truncate to 1.
+    client.write_value(Register.HOLD_REG_PA_MAX_WORK_SET, 1.7)
+    call = fake_client.calls[-1]
+    assert call.kwargs["value"] == 2
+
+    # 1.4 rounds down.
+    client.write_value(Register.HOLD_REG_PA_MAX_WORK_SET, 1.4)
+    call = fake_client.calls[-1]
+    assert call.kwargs["value"] == 1
+
+
+def test_write_value_accepts_bool_for_coil(client, fake_client):
+    """Regression guard: the bool rejection must NOT fire for coil
+    writes, where True/False is the natural input."""
+    client.write_value(Register.COIL_ENABLE, True)
+    call = fake_client.calls[-1]
+    assert call.name == "write_coil"
+    assert call.kwargs["value"] is True

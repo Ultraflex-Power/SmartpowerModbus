@@ -38,7 +38,7 @@ from smartpower_modbus import (
     UnsupportedFirmwareBranchError,
     UnsupportedRegisterError,
 )
-from smartpower_modbus.branches import FirmwareBranch
+from smartpower_modbus.branches import FirmwareBranch  # noqa: F401 (used in some tests)
 
 
 # ---------- Pymodbus response/exception fakes ----------
@@ -104,6 +104,9 @@ class FakeSerialClient:
         self.calls: list[_Call] = []
         # Default canned responses keyed by method name; tests override.
         self.scripts: dict[str, list[Any]] = {}
+        # Tracks how many times close() ran — useful for verifying that
+        # the client cleans up on a failed connect() / auto-identify.
+        self.close_count: int = 0
 
     def script(self, name: str, *responses):
         self.scripts[name] = list(responses)
@@ -122,7 +125,7 @@ class FakeSerialClient:
         return True
 
     def close(self):
-        pass
+        self.close_count += 1
 
     # reads
     def read_holding_registers(self, address, *, slave=None, count=1, **kw):
@@ -233,11 +236,34 @@ def test_read_discrete_returns_bool(client, fake_client):
 
 # ---------- Tests: writes ----------
 
-def test_write_holding_normalises_negative_to_uint16(client, fake_client):
-    client.write(Register.HOLD_REG_SP_P, -1)
-    call = fake_client.calls[-1]
-    assert call.name == "write_register"
-    assert call.kwargs["value"] == 0xFFFF
+def test_write_rejects_negative_for_unsigned_register(client):
+    """HOLD_REG_SP_P is unsigned (range 0..65535). Writing -1 must raise
+    rather than silently wrap to 0xFFFF — see code-review Bug 4c."""
+    with pytest.raises(InvalidValueError, match="uint16"):
+        client.write(Register.HOLD_REG_SP_P, -1)
+
+
+def test_write_accepts_negative_for_signed_register(client, fake_client):
+    """HOLD_REG_THERMO_REG_EXT_SP is signed (range -32768..32767). A
+    negative value is written through as a two's-complement uint16 on
+    the wire."""
+    # That register is only available on SOLO/GEN_1_0, so we need a
+    # different client. Build one inline against the same fake.
+    c = SmartPowerClient(
+        port="dummy", slave_id=1,
+        model=SmartPowerModel.GEN_1_0,
+        timeout=0.01, retries=0,
+    )
+    c._transport._client = fake_client
+    c._transport.connect()
+    c._connected = True
+    try:
+        c.write(Register.HOLD_REG_THERMO_REG_EXT_SP, -1)
+        call = fake_client.calls[-1]
+        assert call.name == "write_register"
+        assert call.kwargs["value"] == 0xFFFF
+    finally:
+        c.close()
 
 
 def test_write_coil_routes_to_write_coil(client, fake_client):
@@ -591,3 +617,176 @@ def test_context_manager_connects_and_closes(fake_client):
         assert ctx is c
         assert c._connected is True
     assert c._connected is False
+
+
+# ---------- Tests: code-review regression coverage ----------
+
+def test_connect_closes_transport_when_auto_identify_fails(fake_client):
+    """Bug 1: if auto-identification raises during connect(), the
+    serial transport must be closed and ``_connected`` reset, otherwise
+    Python's ``with`` won't call __exit__ (since __enter__ never
+    returned) and the port leaks."""
+    # Device reports a product code the library doesn't recognise →
+    # identify_model() raises UnsupportedFirmwareBranchError.
+    fake_client.script(
+        "read_device_information",
+        _DeviceInfoResp({1: b"DEADBEEF"}),
+    )
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01, retries=0)
+    c._transport._client = fake_client
+    with pytest.raises(SmartPowerError):
+        c.connect()
+    assert c._connected is False
+    assert fake_client.close_count == 1
+
+
+def test_connect_closes_transport_when_auto_identify_hits_illegal_function(fake_client):
+    """Same as above but the device returns Modbus exception 0x01
+    (slave doesn't support FC 0x2B) instead of an unknown code."""
+    fake_client.script("read_device_information", _ExcResp(0x01))
+    c = SmartPowerClient(port="dummy", slave_id=1, timeout=0.01, retries=0)
+    c._transport._client = fake_client
+    with pytest.raises(IllegalFunctionError):
+        c.connect()
+    assert c._connected is False
+    assert fake_client.close_count == 1
+
+
+def test_writes_do_not_retry_by_default(fake_client):
+    """Bug 3: writes must not auto-retry on timeout — a write after a
+    timeout may have already been applied on the slave, and a retry
+    would double-write."""
+    from pymodbus.exceptions import ModbusIOException
+    c = SmartPowerClient(
+        port="dummy", slave_id=1,
+        model=SmartPowerModel.GEN_2_0,
+        timeout=0.01, retries=2,
+    )
+    c._transport._client = fake_client
+    c._transport.connect()
+    c._connected = True
+    fake_client.script(
+        "write_register",
+        ModbusIOException("response timeout"),
+        ModbusIOException("response timeout"),
+        ModbusIOException("response timeout"),
+    )
+    with pytest.raises(ModbusTimeoutError):
+        c.write(Register.HOLD_REG_SP_P, 50)
+    n_writes = sum(1 for call in fake_client.calls if call.name == "write_register")
+    assert n_writes == 1, f"expected 1 write attempt, got {n_writes}"
+    c.close()
+
+
+def test_writes_retry_when_retry_writes_enabled(fake_client):
+    """Opt-in: with ``retry_writes=True`` the old behaviour is back."""
+    from pymodbus.exceptions import ModbusIOException
+    c = SmartPowerClient(
+        port="dummy", slave_id=1,
+        model=SmartPowerModel.GEN_2_0,
+        timeout=0.01, retries=2,
+        retry_writes=True,
+    )
+    c._transport._client = fake_client
+    c._transport.connect()
+    c._connected = True
+    fake_client.script(
+        "write_register",
+        ModbusIOException("response timeout"),
+        ModbusIOException("response timeout"),
+        _Resp(),  # succeeds on third try
+    )
+    c.write(Register.HOLD_REG_SP_P, 50)
+    n_writes = sum(1 for call in fake_client.calls if call.name == "write_register")
+    assert n_writes == 3
+    c.close()
+
+
+def test_read_device_information_uses_kwarg_shim(fake_client):
+    """Bug 2: the MEI request must honour pymodbus's ``slave=`` /
+    ``device_id=`` / ``unit=`` drift the same way regular FC calls do.
+
+    We swap in a fake whose ``read_device_information`` accepts only
+    ``device_id=`` (modelled after pymodbus 3.8+). If the transport
+    bypassed the shim with a hard-coded ``slave=``, this would fail
+    with a TypeError that bubbled up as ModbusCommError."""
+    class _DeviceIdOnlyClient(FakeSerialClient):
+        def read_device_information(self, *, read_code=0x01, object_id=0, device_id=None, **kw):
+            self.calls.append(_Call(
+                "read_device_information", -1,
+                {"read_code": read_code, "object_id": object_id, "device_id": device_id, **kw},
+            ))
+            return self._next(
+                "read_device_information",
+                _DeviceInfoResp({1: b"55370112"}),
+            )
+
+    fc = _DeviceIdOnlyClient()
+    c = SmartPowerClient(
+        port="dummy", slave_id=1,
+        model=SmartPowerModel.GEN_2_0,
+        timeout=0.01, retries=0,
+    )
+    c._transport._client = fc
+    c._transport.connect()
+    c._connected = True
+    code = c.read_product_code()
+    assert code == "55370112"
+    # Confirm the shim picked the right kwarg name.
+    assert fc.calls[-1].kwargs["device_id"] == 1
+    c.close()
+
+
+def test_read_device_information_retries_on_timeout(fake_client):
+    """Bug 2: the MEI path must use the same retry loop as the other
+    reads — two timeouts then success returns the third response."""
+    from pymodbus.exceptions import ModbusIOException
+    c = SmartPowerClient(
+        port="dummy", slave_id=1,
+        model=SmartPowerModel.GEN_2_0,
+        timeout=0.01, retries=2,
+    )
+    c._transport._client = fake_client
+    c._transport.connect()
+    c._connected = True
+    fake_client.script(
+        "read_device_information",
+        ModbusIOException("response timeout"),
+        ModbusIOException("response timeout"),
+        _DeviceInfoResp({1: b"55370112"}),
+    )
+    code = c.read_product_code()
+    assert code == "55370112"
+    n_calls = sum(1 for call in fake_client.calls if call.name == "read_device_information")
+    assert n_calls == 3
+    c.close()
+
+
+def test_transport_short_response_raises_modbus_comm_error(client, fake_client):
+    """Bug 5: a response that succeeds but returns fewer registers than
+    requested must surface as ModbusCommError, not IndexError."""
+    fake_client.script("read_holding_registers", _Resp(registers=[1]))
+    with pytest.raises(ModbusCommError, match="only 1"):
+        client.read_holding(0x3000, count=3)
+
+
+def test_transport_missing_registers_attr_raises_modbus_comm_error(client, fake_client):
+    """Bug 5: a response object without the expected attribute must
+    surface as ModbusCommError, not AttributeError."""
+    class _BadResp:
+        def isError(self):  # noqa: N802
+            return False
+    fake_client.script("read_input_registers", _BadResp())
+    with pytest.raises(ModbusCommError, match="missing 'registers'"):
+        client.read_input(0x2000, count=1)
+
+
+def test_transport_null_registers_attr_raises_modbus_comm_error(client, fake_client):
+    """Bug 5: payload=None on a successful response → ModbusCommError."""
+    class _NoneResp:
+        registers = None
+        def isError(self):  # noqa: N802
+            return False
+    fake_client.script("read_input_registers", _NoneResp())
+    with pytest.raises(ModbusCommError):
+        client.read_input(0x2000, count=1)

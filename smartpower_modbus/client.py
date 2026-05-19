@@ -36,6 +36,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_BAUDRATE = 38400  # MODBUS::DEF_BAUD_RATE from ModBus.hpp
 
 
+def interpret_raw(
+    reg: Register,
+    raw: int | bool,
+    temperature_unit: TemperatureUnit,
+) -> float | int | bool:
+    """Apply ``reg``'s scaling and (for temperatures) the requested
+    output unit to a raw value already read from the wire.
+
+    Single source of truth shared by ``SmartPowerClient.read_value()``
+    and the CLI ``dump --interpret`` path, which both need this
+    transformation but on values that arrived through different paths
+    (live read vs. a cached ``client.dump()`` result).
+    """
+    if isinstance(raw, bool):
+        return raw
+    # Apply the firmware-side scaling first.
+    if reg.scale == 1.0 and not is_temperature_unit(reg.unit):
+        value: float | int = raw  # keep int — no fractional component
+    else:
+        value = raw * reg.scale
+    if is_temperature_unit(reg.unit):
+        return kelvin_to(value, temperature_unit)
+    return value
+
+
 def _coerce_model(value) -> SmartPowerModel:
     """Accept a SmartPowerModel, a public model name string, a FirmwareBranch
     (deprecated), or a firmware-branch string (deprecated) and return the
@@ -89,6 +114,7 @@ class SmartPowerClient:
         bytesize: int = 8,
         timeout: float = 1.0,
         retries: int = 2,
+        retry_writes: bool = False,
         temperature_unit: TemperatureUnit | str = TemperatureUnit.CELSIUS,
         branch=None,
     ) -> None:
@@ -129,6 +155,7 @@ class SmartPowerClient:
             timeout=timeout,
             slave_id=slave_id,
             retries=retries,
+            retry_writes=retry_writes,
         )
         self._connected = False
 
@@ -164,12 +191,24 @@ class SmartPowerClient:
                 self._transport.connect()
                 self._connected = True
         # Auto-identify the model if the user didn't pass one. Done outside
-        # the lock because identify_model() acquires it itself.
+        # the lock because identify_model() acquires it itself. If
+        # auto-identification raises (unknown PRODUCT_CODE, slave does
+        # not support FC 0x2B, comm error, ...), the serial transport
+        # must be closed before propagating — otherwise the port leaks,
+        # and Python's ``with`` will not call __exit__ since __enter__
+        # never returned.
         if self.model is None:
             logger.info(
                 "No model configured — auto-identifying via FC 0x2B PRODUCT_CODE"
             )
-            self.identify_model()
+            try:
+                self.identify_model()
+            except BaseException:
+                with self._lock:
+                    if self._connected:
+                        self._transport.close()
+                        self._connected = False
+                raise
         logger.info(
             "Connected to %s slave=%d model=%s",
             self.port, self.slave_id, self.model.value,
@@ -263,6 +302,22 @@ class SmartPowerClient:
             raise InvalidValueError(
                 f"Holding register {reg.name} expects int, got {type(value).__name__}"
             )
+        # Range-check according to the register's declared signedness.
+        # unsigned16() accepts the whole [-32768, 65535] range — which
+        # silently turns a stray -1 on an unsigned register into 0xFFFF.
+        # Validate first so the caller sees a meaningful error.
+        if reg.signed:
+            if not -0x8000 <= value <= 0x7FFF:
+                raise InvalidValueError(
+                    f"{reg.name} is int16 — value {value} out of range "
+                    f"[-32768, 32767]"
+                )
+        else:
+            if not 0 <= value <= 0xFFFF:
+                raise InvalidValueError(
+                    f"{reg.name} is uint16 — value {value} out of range "
+                    f"[0, 65535]"
+                )
         with self._lock:
             self._transport.write_holding(reg.addr, unsigned16(value))
 
@@ -296,22 +351,10 @@ class SmartPowerClient:
               (i.e. enum / bitmask / counter registers that don't scale).
         """
         raw = self.read(reg)
-        if isinstance(raw, bool):
-            return raw
         if isinstance(temperature_unit, str):
             temperature_unit = TemperatureUnit.from_name(temperature_unit)
         unit_out = temperature_unit or self.temperature_unit
-
-        # Apply the firmware-side scaling first.
-        if reg.scale == 1.0 and not is_temperature_unit(reg.unit):
-            value = raw  # keep int — no fractional component
-        else:
-            value = raw * reg.scale
-
-        # Temperatures: convert from K (the firmware unit) to the caller's unit.
-        if is_temperature_unit(reg.unit):
-            return kelvin_to(value, unit_out)
-        return value
+        return interpret_raw(reg, raw, unit_out)
 
     def write_value(
         self,
@@ -338,6 +381,16 @@ class SmartPowerClient:
             self.write(reg, value)
             return
 
+        # Reject bool for non-coil registers up front. Without this check
+        # ``int(True)`` would silently coerce to 1 and a caller intending
+        # to set a coil but addressing a holding register would get a
+        # wrong-but-plausible write.
+        if isinstance(value, bool):
+            raise InvalidValueError(
+                f"{reg.name} is a {reg.kind.value}, not a coil — "
+                f"refusing to silently coerce bool to int"
+            )
+
         if isinstance(temperature_unit, str):
             temperature_unit = TemperatureUnit.from_name(temperature_unit)
         unit_in = temperature_unit or self.temperature_unit
@@ -346,12 +399,10 @@ class SmartPowerClient:
         if is_temperature_unit(reg.unit):
             value = kelvin_from(float(value), unit_in)
 
-        # Invert the firmware-side scaling. Round half-to-even — saner
-        # than truncation for setpoints near integer boundaries.
-        if reg.scale == 1.0 and not is_temperature_unit(reg.unit):
-            raw = int(value)
-        else:
-            raw = int(round(value / reg.scale))
+        # Invert the firmware-side scaling. Always round half-to-even —
+        # truncation would surprise the caller for setpoints near
+        # integer boundaries (e.g. write_value(reg, 1.7) would store 1).
+        raw = int(round(float(value) / reg.scale))
 
         # Range-check before delegating to write() so the user gets a
         # meaningful error message that mentions the physical value.
@@ -386,10 +437,15 @@ class SmartPowerClient:
         return val_raw * (10.0 ** exp_raw)
 
     def dump(self) -> dict[Register, int | bool]:
-        """Read every register exposed by the configured model."""
+        """Read every register exposed by the configured model.
+
+        Iteration order follows the protocol address layout (discrete
+        inputs → coils → input regs → holding regs), which is how the
+        spec groups them.
+        """
         model = self._require_model()
         out: dict[Register, int | bool] = {}
-        for reg in sorted(Register.for_model(model), key=lambda r: (r.kind.value, r.addr)):
+        for reg in sorted(Register.for_model(model), key=lambda r: r.addr):
             try:
                 out[reg] = self.read(reg)
             except IllegalAddressError:

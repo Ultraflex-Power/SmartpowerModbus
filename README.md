@@ -74,8 +74,7 @@ The `model=` argument accepts:
 `read()` and `write()` operate on raw 16-bit register values. For
 physical-unit access — Amps, Volts, Watts, Hz, °C, … — use
 `read_value()` / `write_value()`. The scaling factors and SI units come
-straight from the Modbus spec
-(`doc/SDR-1MOD-537-250-00_A7_USP_Modbus.doc`):
+straight from the Modbus spec (rev A7):
 
 ```python
 out_p_W  = client.read_value(Register.INPUT_REG_OUT_P)        # Watts (float)

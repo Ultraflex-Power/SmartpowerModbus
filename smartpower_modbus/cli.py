@@ -22,7 +22,7 @@ import sys
 import warnings
 from typing import Sequence
 
-from .client import DEFAULT_BAUDRATE, SmartPowerClient
+from .client import DEFAULT_BAUDRATE, SmartPowerClient, interpret_raw
 from .exceptions import SmartPowerError
 from .models import SmartPowerModel
 from .registers import Register, RegisterKind
@@ -37,8 +37,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         help=(
             "Public SmartPower model name (SmartPowerSolo, SmartPowerGen_1.0, "
-            "SmartPowerGen_1.5, SmartPowerGen_2.0). Required for everything "
-            "except list-models."
+            "SmartPowerGen_1.5, SmartPowerGen_2.0). Required for "
+            "read/write/dump/probe; optional for list-registers; not needed "
+            "for list-models or identify (which auto-detects via FC 0x2B)."
         ),
     )
     # Deprecated alias retained for back-compat; emits a DeprecationWarning.
@@ -186,7 +187,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if model is None:
             print("error: --model is required for list-registers", file=sys.stderr)
             return 2
-        for reg in sorted(Register.for_model(model), key=lambda r: (r.kind.value, r.addr)):
+        # Sort by address only — each kind lives in its own non-overlapping
+        # 0x?000 range, so this naturally groups them in the spec order
+        # (discrete inputs → coils → input regs → holding regs) instead of
+        # the alphabetic kind-name order.
+        for reg in sorted(Register.for_model(model), key=lambda r: r.addr):
             print(f"0x{reg.addr:04X}  {reg.kind.value:14s}  {reg.name}")
         return 0
 
@@ -251,17 +256,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"wrote {reg.name} = {value!r}; read back {_format_raw(readback, reg)}")
             elif args.cmd == "dump":
                 for reg, value in client.dump().items():
-                    if args.interpret and not isinstance(value, bool):
-                        # Re-interpret the raw value we just got, rather than
-                        # paying for a second wire round-trip.
-                        interpreted = (
-                            value * reg.scale
-                            if reg.scale != 1.0 or is_temperature_unit(reg.unit)
-                            else value
-                        )
-                        if is_temperature_unit(reg.unit):
-                            from .units import kelvin_to
-                            interpreted = kelvin_to(interpreted, temp_unit)
+                    if args.interpret:
+                        # Reuse client.interpret_raw rather than re-deriving
+                        # the scaling and K-conversion logic locally — keeps
+                        # one source of truth between read_value() and here.
+                        interpreted = interpret_raw(reg, value, temp_unit)
                         print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_interpreted(interpreted, reg, temp_unit)}")
                     else:
                         print(f"{reg.name:34s} 0x{reg.addr:04X}  =  {_format_raw(value, reg)}")
