@@ -12,7 +12,7 @@ caller pick the display unit — Celsius by default, with Kelvin and
 Fahrenheit available. Conversion is applied on top of the scaling so a
 raw value of 2981 reads as 24.95 °C, 298.1 K, or 76.91 °F.
 
-Spec reference: ``doc/SDR-1MOD-537-250-00_A7_USP_Modbus.doc``.
+Spec reference: SDR-1MOD-537-250-00 rev A7 (USP Modbus).
 """
 
 from __future__ import annotations

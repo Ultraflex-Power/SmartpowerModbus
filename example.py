@@ -42,8 +42,8 @@ def main() -> int:
         "--temperature-unit", choices=["C", "K", "F"], default="C",
         help="Display unit for temperature registers (default: C)",
     )
-    parser.add_argument("--sp-p", type=int, default=None,
-                        help="If given, attempt to write this SP_P value")
+    parser.add_argument("--sp-p", type=float, default=None,
+                        help="If given, write SP_P as a percentage (e.g. 50 = 50.00%%)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -109,23 +109,26 @@ def main() -> int:
                         suffix = f"°{temp_unit.value}" if temp_unit is not TemperatureUnit.KELVIN else "K"
                     print(f"  {reg.name:30s} = {value} {suffix}".rstrip())
 
-            # 4) Write a variable safely.
+            # 4) Write a variable safely. write_value() applies the
+            #    register's scale (0.01 %/lsb) so --sp-p is in percent.
             if args.sp_p is not None:
                 fault = client.read(Register.INPUT_FAULT)
                 if fault:
                     print("\nDevice reports FAULT — refusing to write SP_P.")
                 else:
-                    print(f"\nWriting HOLD_REG_SP_P = {args.sp_p}")
+                    print(f"\nWriting HOLD_REG_SP_P = {args.sp_p} %")
                     try:
-                        client.write(Register.HOLD_REG_SP_P, args.sp_p)
+                        client.write_value(Register.HOLD_REG_SP_P, args.sp_p)
                     except InvalidValueError as exc:
                         print(f"  rejected by library: {exc}")
                     else:
-                        readback = client.read(Register.HOLD_REG_SP_P)
-                        if readback == args.sp_p:
-                            print(f"  readback OK: {readback}")
+                        readback = client.read_value(Register.HOLD_REG_SP_P)
+                        # Tolerance: one raw lsb is 0.01 %; round-trip can lose
+                        # at most half that to nearest-even rounding.
+                        if abs(readback - args.sp_p) <= 0.005:
+                            print(f"  readback OK: {readback} %")
                         else:
-                            print(f"  readback mismatch: wrote {args.sp_p}, read {readback}")
+                            print(f"  readback mismatch: wrote {args.sp_p} %, read {readback} %")
 
         # 5) Connection automatically closed by context manager exit.
         print("\nConnection closed.")

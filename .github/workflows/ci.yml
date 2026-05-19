@@ -3,6 +3,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# Least-privilege: this workflow only runs tests + a packaging dry-run.
+permissions:
+  contents: read
+
+# Cancel superseded PR runs so a force-push doesn't keep stale CI burning
+# minutes. Main-branch runs keep their own concurrency group so they don't
+# cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -14,6 +26,7 @@ jobs:
           - "3.10"
           - "3.11"
           - "3.12"
+          - "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,3 +46,19 @@ jobs:
         run: python -m mypy smartpower_modbus
       - name: Run pytest with coverage
         run: python -m pytest -q --cov=smartpower_modbus --cov-report=term-missing
+
+  build:
+    # Packaging sanity gate — catches missing files in the sdist/wheel and
+    # malformed metadata before they reach PyPI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: pip install --upgrade build twine
+      - name: Build sdist + wheel
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check --strict dist/*

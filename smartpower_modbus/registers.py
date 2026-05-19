@@ -96,7 +96,7 @@ class Register(Enum):
     COIL_SW_BOX_RIGHT_ON   = RegisterMeta(0x1008, RegisterKind.COIL)
 
     # ---------- Input registers (0x2000+) — read-only telemetry ----------
-    # Scaling and units sourced from SDR-1MOD-537-250-00_A7_USP_Modbus.doc.
+    # Scaling and units sourced from SDR-1MOD-537-250-00 rev A7 (USP Modbus).
     # Convention: interpreted_value = raw * scale, expressed in `unit`.
     # Temperatures are stored in Kelvin (×10) on the wire; the client
     # converts to Celsius/Kelvin/Fahrenheit per SmartPowerClient.temperature_unit.
@@ -232,14 +232,28 @@ class Register(Enum):
         Case-insensitive; accepts forms like ``OUT_P``, ``INPUT_REG_OUT_P``,
         and ``APP_ADDR_INPUT_REG_OUT_P``. Also accepts the firmware typo
         ``ACIVE_PROFILE`` and the MegaMain rename ``MCB_COOLANT_FLOW``.
+
+        Suffix-only forms are only accepted when unambiguous. ``OUT_P`` is
+        unique (one register), but ``SP_P``, ``ERROR``, ``CONFIG``, … exist
+        as both input-register and holding-register members. Passing an
+        ambiguous suffix raises :class:`UnsupportedRegisterError` listing
+        the colliding canonical names; pick one and pass it in full.
         """
         norm = name.strip().upper().removeprefix("APP_ADDR_")
         try:
             return _NAME_INDEX[norm]
         except KeyError:
+            pass
+        candidates = _AMBIGUOUS_SUFFIXES.get(norm)
+        if candidates is not None:
             raise UnsupportedRegisterError(
-                f"No register matches name {name!r}"
-            ) from None
+                f"Register name {name!r} is ambiguous — it matches multiple "
+                f"registers: {', '.join(r.name for r in candidates)}. "
+                f"Pass the full canonical name instead."
+            )
+        raise UnsupportedRegisterError(
+            f"No register matches name {name!r}"
+        )
 
     @classmethod
     def for_branch(cls, branch: FirmwareBranch) -> frozenset[Register]:
@@ -253,21 +267,23 @@ class Register(Enum):
         return frozenset(r for r in cls if fb in r.branches)
 
 
-def _build_name_index() -> dict[str, Register]:
-    """Pre-build the name → Register map used by ``Register.from_name``.
+def _build_name_index() -> tuple[
+    dict[str, Register], dict[str, tuple[Register, ...]]
+]:
+    """Pre-build the name → Register maps used by ``Register.from_name``.
 
-    Built once at import; keeps lookup O(1). Two passes so canonical and
-    legacy names always win over the more-ambiguous suffix-only form:
+    Built once at import; keeps lookup O(1). Returns two maps:
 
-    1. Canonical names + explicit legacy_names: these must be unique. A
-       collision indicates a programmer mistake (two registers claiming
-       the same identifier) and is raised at import time so it can't
-       lurk in production.
-    2. Suffix-only forms (e.g. ``OUT_P`` → ``INPUT_REG_OUT_P``): first
-       match wins, matching the historical linear-scan behaviour. Two
-       registers sharing a suffix (e.g. ``CONFIG`` on both ``INPUT_CONFIG``
-       and ``COIL_CONFIG``) resolve to whichever enum member is declared
-       first — i.e. by ascending address.
+    1. ``index`` — canonical names + explicit legacy_names + unambiguous
+       suffix-only forms. Canonical/legacy collisions are programmer
+       errors and raised at import time so they can't lurk in production.
+    2. ``ambiguous`` — suffix-only forms shared by more than one register
+       (e.g. ``SP_P`` lives on both ``INPUT_REG_SP_P`` and
+       ``HOLD_REG_SP_P``). ``from_name`` rejects these with a message
+       that lists the candidates so the caller can disambiguate.
+
+    Suffixes that would shadow a canonical or legacy name are skipped —
+    canonical lookups must not be displaced by the looser suffix form.
     """
     index: dict[str, Register] = {}
 
@@ -289,19 +305,27 @@ def _build_name_index() -> dict[str, Register]:
                 )
             index[key] = reg
 
-    # Pass 2: suffix-only forms — first-match-wins. Skip silently if a
-    # canonical/legacy already owns the key (canonical lookups must not be
-    # shadowed) or if an earlier register already registered the suffix.
+    # Pass 2: collect suffix candidates per key.
+    suffix_candidates: dict[str, list[Register]] = {}
     for reg in Register:
         for prefix in ("INPUT_", "COIL_", "INPUT_REG_", "HOLD_REG_"):
             if reg.name.startswith(prefix):
                 suffix = reg.name[len(prefix):]
                 if suffix and suffix not in index:
-                    index[suffix] = reg
-    return index
+                    suffix_candidates.setdefault(suffix, []).append(reg)
+
+    ambiguous: dict[str, tuple[Register, ...]] = {}
+    for suffix, candidates in suffix_candidates.items():
+        if len(candidates) == 1:
+            index[suffix] = candidates[0]
+        else:
+            ambiguous[suffix] = tuple(candidates)
+    return index, ambiguous
 
 
-_NAME_INDEX: dict[str, Register] = _build_name_index()
+_NAME_INDEX: dict[str, Register]
+_AMBIGUOUS_SUFFIXES: dict[str, tuple[Register, ...]]
+_NAME_INDEX, _AMBIGUOUS_SUFFIXES = _build_name_index()
 
 
 def assert_supported(reg: Register, target) -> None:

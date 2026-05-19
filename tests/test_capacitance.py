@@ -35,39 +35,15 @@ from smartpower_modbus import (
 )
 from smartpower_modbus.client import _encode_capacitance
 
-# Re-use the existing fake transport from test_transport.py. With pytest's
-# default rootdir + tests/__init__.py present, the package form works; the
-# alternative ``from test_transport import ...`` is the fallback if pytest is
-# run with ``--import-mode=importlib``.
-try:
-    from tests.test_transport import FakeSerialClient, _DeviceInfoResp, _Resp
-except ImportError:  # pragma: no cover — fallback for non-package import modes
-    from test_transport import FakeSerialClient, _DeviceInfoResp, _Resp
+# Fakes + fixtures (FakeSerialClient, _Resp, _DeviceInfoResp, fake_client,
+# client) come from tests/conftest.py — they're loaded automatically.
+from .conftest import _DeviceInfoResp, _Resp
 
 
 def _signed16_to_raw(value: int) -> int:
     """Inverse of ``registers.signed16``, used to build fake register payloads
     for negative exponents."""
     return value & 0xFFFF
-
-
-@pytest.fixture()
-def fake_client():
-    return FakeSerialClient()
-
-
-@pytest.fixture()
-def client(fake_client):
-    c = SmartPowerClient(
-        port="dummy", slave_id=1,
-        model=SmartPowerModel.GEN_2_0,
-        timeout=0.01, retries=0,
-    )
-    c._transport._client = fake_client
-    c._transport.connect()
-    c._connected = True
-    yield c
-    c.close()
 
 
 # ---------- B1 + B2: read_capacitance ----------
