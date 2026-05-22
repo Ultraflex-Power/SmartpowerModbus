@@ -292,11 +292,15 @@ class _Transport:
                 )
             else:
                 logger.debug("RX %s response=%r", method.__name__, response)
-                # Modbus exception responses carry an ``exception_code``
-                # attribute. Duck-type on it rather than isinstance so the
-                # shim survives the class moving around inside pymodbus.
-                exc_code = getattr(response, "exception_code", None)
-                if exc_code is not None:
+                # Modbus exception responses carry a nonzero
+                # ``exception_code`` attribute. Duck-type on it rather than
+                # isinstance so the shim survives the class moving around
+                # inside pymodbus. pymodbus 3.13 initialises
+                # ``exception_code = 0`` on every response (including
+                # successful ones), so check truthiness, not just
+                # presence — the valid exception codes are 0x01..0x04.
+                exc_code = getattr(response, "exception_code", 0)
+                if exc_code:
                     # Deterministic Modbus error — never retry.
                     self._raise_exception_response(response)
                 if response is None or response.isError():
