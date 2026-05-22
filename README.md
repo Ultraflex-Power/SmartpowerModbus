@@ -13,6 +13,68 @@ pip install -e .
 
 Requires Python 3.10+ and `pymodbus>=3.7,<4`.
 
+If you're working in a bare environment that doesn't install the package
+itself, `requirements.txt` lists the same runtime dependencies, and
+`requirements-dev.txt` adds the test/lint/type-check tools CI uses
+(`pytest`, `pytest-cov`, `ruff`, `mypy`):
+
+```powershell
+pip install -r requirements.txt        # runtime only
+pip install -r requirements-dev.txt    # runtime + tests + lint + mypy
+```
+
+## How to use
+
+1. **Connect the module.** Wire the SmartPower control board to your
+   serial adapter (RS-485 / USB-serial). Note the OS port name
+   (`COM5` on Windows, `/dev/ttyUSB0` on Linux) and the Modbus slave ID
+   configured on the module (1..247).
+
+2. **Pick an entry point.**
+   - **Python library** — `from smartpower_modbus import SmartPowerClient`
+     and use it as a context manager. See [Library usage](#library-usage).
+   - **CLI** — `smartpower-cli ...` for one-off reads/writes, dumps,
+     and probes. See [CLI](#cli). If the entry point isn't on PATH,
+     run `python -m smartpower_modbus.cli ...`.
+
+3. **Identify the model (optional).** If you don't already know which
+   SmartPower variant is on the bus, let the library auto-detect it via
+   `PRODUCT_CODE` — omit `model=` in Python, or use the `identify`
+   subcommand on the CLI. See [Auto-detection](#auto-detection).
+
+4. **Read or write registers.** Use `Register.<NAME>` (or the CLI's
+   short names like `OUT_P`) to address registers by name rather than
+   raw addresses — the library validates kind, signedness, and that the
+   register exists on the selected model before any wire activity.
+   For physical units (Amps, Volts, °C, …) use `read_value()` /
+   `write_value()` or the CLI's `-i` / `--interpret` flag.
+
+Smallest working example:
+
+```python
+from smartpower_modbus import Register, SmartPowerClient
+
+with SmartPowerClient("COM5", slave_id=1) as client:  # model auto-detected
+    print(client.model.value)                          # e.g. SmartPowerGen_2.0
+    print(client.read_value(Register.INPUT_REG_OUT_P)) # W (float)
+    client.write_value(Register.HOLD_REG_SP_P, 50.0)   # 50 %
+```
+
+Same idea from the CLI:
+
+```powershell
+smartpower-cli --port COM5 --slave 1 identify
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 read -i OUT_P SP_P
+smartpower-cli --port COM5 --slave 1 --model SmartPowerGen_2.0 write -i HOLD_REG_SP_P 50
+```
+
+The walkthrough script `example.py` exercises the most common
+read/write paths end-to-end:
+
+```powershell
+python example.py --port COM5 --slave 1 --model SmartPowerGen_2.0 --sp-p 50
+```
+
 ## Supported SmartPower models
 
 The public API talks in **product model names** only:

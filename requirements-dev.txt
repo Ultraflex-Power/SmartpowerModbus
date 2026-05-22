@@ -1,0 +1,12 @@
+# Development + test dependencies for smartpower-modbus.
+# Kept in sync with [project.optional-dependencies].dev in pyproject.toml.
+# Runtime deps are in requirements.txt; this file pulls them in via -r.
+-r requirements.txt
+
+# Test runner + coverage (matches the [test] extra).
+pytest>=7
+pytest-cov
+
+# Lint + type-check (CI runs both — see .github/workflows/ci.yml).
+ruff
+mypy

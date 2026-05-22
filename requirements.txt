@@ -1,0 +1,6 @@
+# Runtime dependencies for smartpower-modbus.
+# Kept in sync with [project.dependencies] in pyproject.toml — that file is
+# the source of truth for installs (pip install -e .). This file exists for
+# bare-bones environments that don't install the package itself.
+pymodbus>=3.7,<4
+pyserial>=3.5
