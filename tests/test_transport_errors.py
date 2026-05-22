@@ -50,6 +50,27 @@ def test_illegal_value_response_becomes_illegal_value_error(client, fake_client)
         client.write(Register.HOLD_REG_SP_P, 50)
 
 
+def test_successful_response_with_exception_code_zero_is_not_an_error(client, fake_client):
+    """Regression: pymodbus 3.13 initialises ``exception_code = 0`` on
+    *every* response object — including successful reads. The transport's
+    exception-code check must only fire on nonzero codes (the valid
+    Modbus exception codes are 0x01..0x04), otherwise every successful
+    transaction surfaces as ``Modbus exception response 0x00``.
+    """
+    class _Pymb313Resp:
+        # Shape mirrors pymodbus 3.13's ReadInputRegistersResponse: an
+        # ``exception_code`` attribute set to 0 on the success path.
+        exception_code = 0
+        def __init__(self, registers):
+            self.registers = list(registers)
+        def isError(self):  # noqa: N802 — pymodbus naming
+            return False
+
+    fake_client.script("read_input_registers", _Pymb313Resp(registers=[5537]))
+    # Before the fix this raised ModbusCommError("Modbus exception response 0x00").
+    assert client.read(Register.INPUT_REG_OUT_P) == 5537
+
+
 def test_isError_response_is_translated(client, fake_client):
     fake_client.script("read_input_registers", _ErrResp("bus error"))
     with pytest.raises(ModbusCommError):
