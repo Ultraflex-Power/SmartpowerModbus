@@ -39,6 +39,11 @@ smartpower_modbus = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "hardware: live-device test against a real SmartPower module. Skipped unless --hardware is passed (see tests/hardware/README.md).",
+    "hardware_write: live-device test that performs a Modbus write. Skipped unless both --hardware and --allow-writes are passed.",
+    "hardware_fault: live-device fault-injection test (illegal-address, timeout, ...). Skipped unless both --hardware and --allow-fault-injection are passed.",
+]
 
 [tool.ruff]
 line-length = 100
