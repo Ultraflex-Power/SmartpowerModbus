@@ -52,6 +52,11 @@ def pytest_addoption(parser):
              "timeouts. Implies --hardware.",
     )
     group.addoption(
+        "--allow-firmware-bug-tests", action="store_true", default=False,
+        help="Allow @pytest.mark.hardware_firmware_bug regression checks "
+             "(read-only diagnostics for known firmware defects). Implies --hardware.",
+    )
+    group.addoption(
         "--port", action="store", default=None,
         help="Serial port for the live-hardware suite (e.g. /dev/ttyUSB0, COM5).",
     )
@@ -92,6 +97,7 @@ def pytest_collection_modifyitems(config, items):
     hardware = config.getoption("--hardware")
     allow_writes = config.getoption("--allow-writes")
     allow_faults = config.getoption("--allow-fault-injection")
+    allow_fw_bugs = config.getoption("--allow-firmware-bug-tests")
     port = config.getoption("--port")
 
     skip_no_hardware = pytest.mark.skip(
@@ -106,12 +112,16 @@ def pytest_collection_modifyitems(config, items):
     skip_no_faults = pytest.mark.skip(
         reason="hardware-fault test — pass --allow-fault-injection to enable",
     )
+    skip_no_fw_bugs = pytest.mark.skip(
+        reason="firmware-bug regression — pass --allow-firmware-bug-tests to enable",
+    )
 
     for item in items:
         is_hw = "hardware" in item.keywords
         is_write = "hardware_write" in item.keywords
         is_fault = "hardware_fault" in item.keywords
-        if not (is_hw or is_write or is_fault):
+        is_fw_bug = "hardware_firmware_bug" in item.keywords
+        if not (is_hw or is_write or is_fault or is_fw_bug):
             continue
         if not hardware:
             item.add_marker(skip_no_hardware)
@@ -124,6 +134,9 @@ def pytest_collection_modifyitems(config, items):
             continue
         if is_fault and not allow_faults:
             item.add_marker(skip_no_faults)
+            continue
+        if is_fw_bug and not allow_fw_bugs:
+            item.add_marker(skip_no_fw_bugs)
             continue
 
 # ---------- Pymodbus response/exception fakes ----------

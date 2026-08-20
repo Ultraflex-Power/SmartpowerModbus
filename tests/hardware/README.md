@@ -46,8 +46,14 @@ python -m pytest -q --hardware --allow-fault-injection \
     --port=/dev/ttyUSB0 --slave-id=1 \
     tests/hardware/test_fault_recovery.py
 
+# Firmware-bug regression (FC 0x02 → FC 0x04 corruption check).
+python -m pytest -q --hardware --allow-firmware-bug-tests \
+    --port=/dev/ttyUSB0 --slave-id=1 \
+    tests/hardware/test_fc02_fc04_corruption.py
+
 # Full hardware run.
 python -m pytest -q --hardware --allow-writes --allow-fault-injection \
+    --allow-firmware-bug-tests \
     --port=/dev/ttyUSB0 --slave-id=1 \
     tests/hardware/
 ```
@@ -59,6 +65,7 @@ python -m pytest -q --hardware --allow-writes --allow-fault-injection \
 | `--hardware`               | off     | Required for any test in this directory. |
 | `--allow-writes`           | off     | Enables `@pytest.mark.hardware_write`. Implies `--hardware`. |
 | `--allow-fault-injection`  | off     | Enables `@pytest.mark.hardware_fault`. Implies `--hardware`. |
+| `--allow-firmware-bug-tests` | off   | Enables `@pytest.mark.hardware_firmware_bug` regression checks. Read-only on the wire. Implies `--hardware`. |
 | `--port=PORT`              | none    | Required when `--hardware` is set. |
 | `--baud=N`                 | 38400   | Matches `smartpower_modbus.DEFAULT_BAUDRATE`. |
 | `--slave-id=N`             | 1       | 1..247. |
@@ -75,6 +82,7 @@ python -m pytest -q --hardware --allow-writes --allow-fault-injection \
 | `test_register_sweep.py`     | `hardware`           | Full `client.dump()`; type and range sanity on every reg. Run twice. |
 | `test_writes.py`             | `hardware_write`     | Round-trip writes on allowlisted registers + capacitance pair. |
 | `test_fault_recovery.py`     | `hardware_fault`     | Illegal-address, illegal-function, timeout, recovery. |
+| `test_fc02_fc04_corruption.py` | `hardware_firmware_bug` | Reproduces the customer-reported FC 0x02 → FC 0x04 input-register corruption. Fails on affected firmware; passes once fixed. |
 
 ## Troubleshooting
 
@@ -90,3 +98,11 @@ python -m pytest -q --hardware --allow-writes --allow-fault-injection \
   manually via `smartpower-cli read <REG_NAME>` and restore. The
   `try/finally` ran but the value didn't match — either the firmware
   rounded our write or another process is writing concurrently.
+- *`test_fc02_fc04_corruption` fails*: the customer-reported defect is
+  present on the connected firmware. The assertion message lists the
+  before/after values of `INPUT_REG_RESET`, `INPUT_REG_PA_ENABLE_MASK`,
+  `INPUT_REG_PA_MAX_WORK_SET`, and `INPUT_REG_OUT_100_P` plus the
+  unaffected neighbour `INPUT_REG_OUT_100_I` — attach the failure
+  output to the firmware ticket. As a runtime workaround, poll FC 0x04
+  only (skip FC 0x02 reads of discrete inputs). See
+  [`PLAN_FC02_CORRUPTION.md`](PLAN_FC02_CORRUPTION.md).

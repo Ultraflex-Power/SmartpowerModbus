@@ -32,3 +32,6 @@ htmlcov/
 Thumbs.db
 
 /doc
+
+# Raw serial capture written by e_2_4_cmd.py
+e_2_4_cmd_serial.log
