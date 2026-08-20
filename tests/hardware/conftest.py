@@ -134,7 +134,12 @@ def _hw_safety_guard(request, hw_client: SmartPowerClient) -> None:
     ``COIL_ENABLE`` from the operator console before running the suite.
     """
     if not any(
-        m.name in ("hardware", "hardware_write", "hardware_fault")
+        m.name in (
+            "hardware",
+            "hardware_write",
+            "hardware_fault",
+            "hardware_firmware_bug",
+        )
         for m in request.node.iter_markers()
     ):
         return
@@ -146,6 +151,57 @@ def _hw_safety_guard(request, hw_client: SmartPowerClient) -> None:
             f"is heating: INPUT_HEAT={heat}. Stop heating before running "
             f"the suite (clear COIL_HEAT).",
         )
+
+
+# ---------- Cached device identification ----------
+
+@pytest.fixture(scope="session")
+def hw_device_info(hw_client: SmartPowerClient) -> dict[str, str]:
+    """One FC 0x2B/0x0E read, cached for the session.
+
+    Failure messages in the firmware-bug regression tests embed the
+    PRODUCT_CODE and firmware revision so the firmware team can route
+    the report without re-running. Cache to keep the failure path off
+    the wire — and so we don't re-issue the MEI request from inside an
+    assertion handler where the bus state may be murky.
+    """
+    return hw_client.read_device_info()
+
+
+# ---------- FC 0x02 → FC 0x04 corruption fixtures ----------
+
+# Exact FC 0x04 PDU shape from the customer's report: 0x2000..0x2007
+# inclusive = 8 input registers. Do NOT widen — the slave may dispatch
+# differently on the quantity field, and we want byte-for-byte fidelity
+# to the reproducer so a false negative can't slip in via a quantity-
+# branched code path.
+FC02_BASELINE_START = 0x2000
+FC02_BASELINE_COUNT = 8
+
+
+@pytest.fixture(scope="session")
+def fc02_corruption_baseline(hw_client: SmartPowerClient) -> list[int]:
+    """Trustworthy snapshot of 0x2000..0x2007 with no FC 0x02 corruption armed.
+
+    The customer's defect persists across idle time and is consumed by
+    exactly one FC 0x04. If anything prior to this session (another
+    master, an interrupted run, a tool used at the bench) issued an
+    FC 0x02 without consuming it, the *first* FC 0x04 of our session
+    would already be corrupted — making it useless as a reference. We
+    drain that latent state with one discard read, then capture the
+    real baseline from the second read.
+    """
+    hw_client._transport.read_input(FC02_BASELINE_START, count=FC02_BASELINE_COUNT)
+    baseline = hw_client._transport.read_input(
+        FC02_BASELINE_START, count=FC02_BASELINE_COUNT,
+    )
+    logger.info(
+        "FC 0x02 corruption baseline at 0x%04X..0x%04X (post-drain): %s",
+        FC02_BASELINE_START,
+        FC02_BASELINE_START + FC02_BASELINE_COUNT - 1,
+        [f"0x{v:04X}" for v in baseline],
+    )
+    return baseline
 
 
 # ---------- Helpers reused across files ----------
