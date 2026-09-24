@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 
 from smartpower_modbus import (
     InvalidValueError,
@@ -24,6 +25,39 @@ from smartpower_modbus import (
     SmartPowerModel,
     TemperatureUnit,
 )
+
+
+def heat_sequence(client: SmartPowerClient) -> None:
+    """Switch HEAT on, request PAUSE, then continue.
+
+    Any ``return`` jumps straight to the ``finally`` block, which
+    switches HEAT off.
+    """
+    print("\nHEAT ON")
+    client.write_value(Register.COIL_HEAT, True)
+    try:
+        for _ in range(2):
+            time.sleep(1)
+            if client.read(Register.INPUT_FAULT):
+                print("  Device reports FAULT during HEAT pulse.")
+                return
+
+        client.write_value(Register.COIL_PAUSE, True)
+        for _ in range(10):
+            time.sleep(1)
+            if not client.read(Register.INPUT_PAUSE):
+                print("  Device reports no PAUSE during HEAT pulse.")
+                return
+
+        client.write_value(Register.COIL_HEAT, True)
+        for _ in range(10):
+            time.sleep(1)
+            if not client.read(Register.INPUT_HEAT):
+                print("  Device reports HEAT OFF pulse.")
+                return
+    finally:
+        client.write_value(Register.COIL_HEAT, False)
+        print("HEAT OFF")
 
 
 def main() -> int:
@@ -130,7 +164,15 @@ def main() -> int:
                         else:
                             print(f"  readback mismatch: wrote {args.sp_p} %, read {readback} %")
 
-        # 5) Connection automatically closed by context manager exit.
+            # 5) HEAT sequence: on, pause, resume. heat_sequence() always
+            #    switches HEAT off on exit (early return, error, or Ctrl+C).
+            if client.read(Register.INPUT_FAULT):
+                print("\nDevice reports FAULT — refusing to switch HEAT on.")
+            else:
+                heat_sequence(client)
+
+        # 6) Connection automatically closed by context manager exit.
+
         print("\nConnection closed.")
         return 0
 
