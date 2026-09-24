@@ -83,6 +83,7 @@ class Register(Enum):
     INPUT_SW_BOX_LEFT_FB    = RegisterMeta(0x000D, RegisterKind.DISCRETE_INPUT)
     INPUT_SW_BOX_RIGHT_ON   = RegisterMeta(0x000E, RegisterKind.DISCRETE_INPUT)
     INPUT_THERMO_REG_ON     = RegisterMeta(0x000F, RegisterKind.DISCRETE_INPUT)
+    INPUT_PAUSE             = RegisterMeta(0x0010, RegisterKind.DISCRETE_INPUT)
 
     # ---------- Coils (0x1000+) — read/write bits ----------
     COIL_CONFIG            = RegisterMeta(0x1000, RegisterKind.COIL)
@@ -94,6 +95,7 @@ class Register(Enum):
     COIL_SW_BOX_ENABLE     = RegisterMeta(0x1006, RegisterKind.COIL)
     COIL_SW_BOX_AUTO       = RegisterMeta(0x1007, RegisterKind.COIL)
     COIL_SW_BOX_RIGHT_ON   = RegisterMeta(0x1008, RegisterKind.COIL)
+    COIL_PAUSE             = RegisterMeta(0x1009, RegisterKind.COIL)
 
     # ---------- Input registers (0x2000+) — read-only telemetry ----------
     # Scaling and units sourced from SDR-1MOD-537-250-00 rev A7 (USP Modbus).
