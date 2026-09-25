@@ -59,6 +59,32 @@ def heat_sequence(client: SmartPowerClient) -> None:
         client.write_value(Register.COIL_HEAT, False)
         print("HEAT OFF")
 
+def heat_sequence1(client: SmartPowerClient) -> None:
+    try:
+        while True:
+            if client.read_value(Register.COIL_HEAT):
+                print("  Device reports HEAT on.")
+                break
+            time.sleep(1)
+
+        client.write_value(Register.COIL_PAUSE, True)
+        print("  Device HEAT paused.")
+        for _ in range(10):
+            time.sleep(1)
+            if not client.read(Register.INPUT_PAUSE):
+                print("  Device reports no PAUSE during HEAT pulse.")
+                return
+
+        print("  Device HEAT on.")
+        client.write_value(Register.COIL_HEAT, True)
+        for _ in range(10):
+            time.sleep(1)
+            if not client.read(Register.INPUT_HEAT):
+                print("  Device reports HEAT OFF pulse.")
+                return
+    finally:
+        client.write_value(Register.COIL_HEAT, False)
+        print("HEAT OFF")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
